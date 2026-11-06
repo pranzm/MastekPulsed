@@ -1,0 +1,19 @@
+{
+  "expo": {
+    "name": "Mastek Pulse",
+    "slug": "mastek-pulse",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.mastek.pulse.poc",
+      "infoPlist": {
+        "UIBackgroundModes": ["audio"]
+      }
+    },
+    "android": {
+      "package": "com.mastek.pulse.poc"
+    }
+  }
+}

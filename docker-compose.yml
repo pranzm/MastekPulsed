@@ -1,0 +1,33 @@
+# ============================================================================
+# INTERN & AI AGENT GUIDE — WHAT IS THIS FILE?
+# ============================================================================
+# File: docker-compose.yml
+# Purpose: Local PostgreSQL 16 database for the Mastek Pulse Modular Monolith.
+# How to use:
+#   Run `docker compose up -d` to launch PostgreSQL 16 on port 5432.
+#   Note for Hackathon Convenience: Our Spring Boot app ALSO includes a
+#   zero-install PostgreSQL-compatible profile so if a developer doesn't have
+#   Docker running, the app still starts and runs Flyway migrations automatically!
+# ============================================================================
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: mastek-pulse-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: mastek_pulse
+      POSTGRES_USER: pulse_app
+      POSTGRES_PASSWORD: pulse_dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - pulse_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pulse_app -d mastek_pulse"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pulse_pg_data:

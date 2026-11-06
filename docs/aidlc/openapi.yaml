@@ -1,0 +1,498 @@
+# ============================================================================
+# INTERN & AI AGENT GUIDE — WHAT IS THIS FILE?
+# ============================================================================
+# File: docs/aidlc/openapi.yaml
+# Purpose: OpenAPI 3.1 Contract-First Specification for Mastek Pulse.
+# Why we need it in AI-DLC:
+#   When 4 developers use Claude Code, OpenAI Codex, and GitHub Copilot across
+#   Java (Spring Boot), React (Web/Portal), and React Native (Mobile), this file
+#   defines the exact JSON request/response payloads and HTTP status codes
+#   (200, 201, 401, 403, 409, 422) so no agent ever hallucinates a field name.
+# ============================================================================
+
+openapi: 3.1.0
+info:
+  title: Mastek Pulse Core API
+  version: 1.0.0
+  description: |
+    Unified REST API for **Mastek Pulse** (Android, iOS, Employee Web, and Role-Based Publishing Portal).
+    Enforces audience permissions before ranking, revision-bound approvals, idempotent connection requests,
+    pessimistic row locking (`FOR UPDATE`) on host capacity, bilateral usefulness confirmations, and the 720-action AI budget cap.
+
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Local Development & POC Server
+
+components:
+  securitySchemes:
+    PulsePersonaHeader:
+      type: apiKey
+      in: header
+      name: X-Pulse-User-Id
+      description: |
+        In POC mode, pass one of the canonical synthetic persona IDs (`usr_asha`, `usr_daniel`, `usr_priya`, `usr_marcus`, `usr_elena`).
+        In production pilot mode, Microsoft Entra ID OIDC Bearer JWT (PKCE / BFF Cookie) is validated by Spring Security.
+
+  parameters:
+    IdempotencyKeyHeader:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Caller-scoped UUID key to guarantee safe mobile/web retries without creating duplicate records.
+      schema:
+        type: string
+        format: uuid
+
+  schemas:
+    ProblemDetail:
+      type: object
+      required: [status, code, message, timestamp]
+      properties:
+        status:
+          type: integer
+          example: 409
+        code:
+          type: string
+          enum: [UNAUTHORIZED, FORBIDDEN_ACCESS, SELF_APPROVAL_DENIED, CAPACITY_FULL, STALE_VERSION, INVITATION_EXPIRED_OR_PAUSED, VALIDATION_FAILED, RESOURCE_NOT_FOUND]
+        message:
+          type: string
+          example: "Full capacity reached (2 places filled this week)."
+        timestamp:
+          type: string
+          format: date-time
+
+    UserProfileDto:
+      type: object
+      required: [id, displayName, email, region, functionName, roles, interests, audiences, hostPaused]
+      properties:
+        id:
+          type: string
+          example: "usr_asha"
+        displayName:
+          type: string
+          example: "Asha Patel"
+        email:
+          type: string
+          example: "asha.patel@mastek-pulse.demo"
+        region:
+          type: string
+          enum: [INDIA, UK, US]
+        functionName:
+          type: string
+          example: "Engineering"
+        roles:
+          type: array
+          items:
+            type: string
+            enum: [EMPLOYEE, CREATOR, REVIEWER, PUBLISHER, MODERATOR, ADMIN]
+        interests:
+          type: array
+          items:
+            type: string
+          example: ["team learning", "innovation", "culture"]
+        audiences:
+          type: array
+          items:
+            type: string
+          example: ["aud_all", "aud_pilot"]
+        hostPaused:
+          type: boolean
+
+    InvitationSummaryDto:
+      type: object
+      required: [id, hostId, hostName, hostRegion, hostFunction, topicLabel, durationMinutes, capacity, acceptedCount, remainingPlaces, paused, expiresAt, statusLabel]
+      properties:
+        id:
+          type: string
+          format: uuid
+        hostId:
+          type: string
+        hostName:
+          type: string
+        hostRegion:
+          type: string
+        hostFunction:
+          type: string
+        topicLabel:
+          type: string
+          example: "Ask me about this"
+        durationMinutes:
+          type: integer
+          example: 15
+        capacity:
+          type: integer
+          example: 2
+        acceptedCount:
+          type: integer
+          example: 0
+        remainingPlaces:
+          type: integer
+          example: 2
+        paused:
+          type: boolean
+        expiresAt:
+          type: string
+          format: date-time
+        statusLabel:
+          type: string
+          enum: [OPEN, FULL, PAUSED, EXPIRED]
+
+    ContentCardDto:
+      type: object
+      required: [id, contentType, title, summary, authorId, authorName, authorFunction, authorRegion, audienceId, audienceName, status, currentVersion, publishedAt, factualExplanation]
+      properties:
+        id:
+          type: string
+          format: uuid
+        contentType:
+          type: string
+          enum: [STORY, UPDATE, CULTURE_CAST, RADIO_QUEUE]
+        title:
+          type: string
+          example: "A retrospective everyone can contribute to"
+        summary:
+          type: string
+          example: "One small change helped quieter voices join our team retrospective."
+        bodyText:
+          type: string
+        officialSource:
+          type: string
+          nullable: true
+        externalUrl:
+          type: string
+          nullable: true
+        authorId:
+          type: string
+        authorName:
+          type: string
+        authorFunction:
+          type: string
+        authorRegion:
+          type: string
+        audienceId:
+          type: string
+        audienceName:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+          enum: [DRAFT, IN_REVIEW, APPROVED, SCHEDULED, PUBLISHED, WITHDRAWN]
+        currentVersion:
+          type: integer
+        publishedVersion:
+          type: integer
+          nullable: true
+        publishedAt:
+          type: string
+          format: date-time
+          nullable: true
+        factualExplanation:
+          type: string
+          description: Grounded strictly in real profile interests and host capacity — never an invented percentage score!
+          example: "WHY THIS? Your interest: team learning · 15 min conversation / 2 places available"
+        hasAudio:
+          type: boolean
+        durationSeconds:
+          type: integer
+          nullable: true
+        transcriptText:
+          type: string
+          nullable: true
+        signedAudioUrl:
+          type: string
+          nullable: true
+        invitation:
+          $ref: '#/components/schemas/InvitationSummaryDto'
+
+    CreateConnectionRequestCommand:
+      type: object
+      required: [invitationId, messageText, aiAssisted]
+      properties:
+        invitationId:
+          type: string
+          format: uuid
+        messageText:
+          type: string
+          minLength: 10
+          maxLength: 1000
+          example: "Hi Daniel, I would love to learn how you made retrospectives more inclusive. Could we compare notes?"
+        aiAssisted:
+          type: boolean
+
+    UpdateConnectionRequestCommand:
+      type: object
+      required: [targetState, expectedVersion]
+      properties:
+        targetState:
+          type: string
+          enum: [ACCEPTED, DECLINED, CANCELLED]
+        expectedVersion:
+          type: integer
+          description: Optimistic concurrency check; throws 409 Conflict if stale.
+
+    ParticipantConfirmationCommand:
+      type: object
+      required: [happened]
+      properties:
+        happened:
+          type: string
+          enum: [YES, NO, NOT_YET]
+        useful:
+          type: boolean
+          nullable: true
+          description: Required when happened == YES; null otherwise.
+
+    ConnectionRequestDto:
+      type: object
+      required: [id, invitationId, storyId, storyTitle, topicLabel, requesterId, requesterName, hostId, hostName, messageText, aiAssisted, state, version, remainingPlaces, createdAt, bilateralOutcome]
+      properties:
+        id:
+          type: string
+          format: uuid
+        invitationId:
+          type: string
+          format: uuid
+        storyId:
+          type: string
+          format: uuid
+        storyTitle:
+          type: string
+        topicLabel:
+          type: string
+        requesterId:
+          type: string
+        requesterName:
+          type: string
+        hostId:
+          type: string
+        hostName:
+          type: string
+        messageText:
+          type: string
+        aiAssisted:
+          type: boolean
+        state:
+          type: string
+          enum: [PENDING, ACCEPTED, DECLINED, CANCELLED, EXPIRED]
+        version:
+          type: integer
+        remainingPlaces:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        myConfirmation:
+          $ref: '#/components/schemas/ParticipantConfirmationCommand'
+        bilateralOutcome:
+          type: string
+          enum: [USEFUL_CONFIRMED, NOT_USEFUL, NOT_HAPPENED, UNKNOWN]
+          description: USEFUL_CONFIRMED only when BOTH requester and host confirm happened=YES and useful=true!
+
+    AiAssistanceRequest:
+      type: object
+      required: [assistType, contextId]
+      properties:
+        assistType:
+          type: string
+          enum: [INVITATION_DRAFT, STORY_POLISH, UPDATE_SUMMARY]
+        contextId:
+          type: string
+          description: Story ID or Update ID to ground the assistance in permitted text only.
+        userDraftText:
+          type: string
+          nullable: true
+
+    AiAssistanceResponse:
+      type: object
+      required: [aiAvailable, aiSuggestion, templateFallback, aiLabel, budgetStatus]
+      properties:
+        aiAvailable:
+          type: boolean
+        aiSuggestion:
+          type: string
+          nullable: true
+        templateFallback:
+          type: string
+          description: Always returned so the user has a zero-AI deterministic option or fallback when budget reaches 100%.
+        aiLabel:
+          type: string
+          example: "AI-assisted draft (grounded in story fields) — review and edit before sending."
+        budgetStatus:
+          type: object
+          required: [actionsUsed, actionCap, percentUsed, alertLevel, hardCapReached]
+          properties:
+            actionsUsed:
+              type: integer
+            actionCap:
+              type: integer
+              example: 720
+            percentUsed:
+              type: number
+            alertLevel:
+              type: string
+              enum: [NORMAL, ALERT_50, ALERT_80, CAPPED_100]
+            hardCapReached:
+              type: boolean
+
+paths:
+  /me:
+    get:
+      summary: Get current authenticated persona profile, explicit interests, audiences, and roles
+      security:
+        - PulsePersonaHeader: []
+      responses:
+        '200':
+          description: Current employee profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfileDto'
+        '401':
+          description: Invalid or missing auth
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+
+  /feed:
+    get:
+      summary: Filter by permitted audience first, then rank by explicit interests & open capacity, and attach factual explanations
+      security:
+        - PulsePersonaHeader: []
+      parameters:
+        - name: category
+          in: query
+          schema:
+            type: string
+            enum: [FOR_YOU, LEARNING, COMMUNITY, UPDATES]
+        - name: q
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Ranked feed of stories and company updates
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ContentCardDto'
+
+  /requests:
+    get:
+      summary: List Received, Sent, and Accepted connection requests for current user
+      security:
+        - PulsePersonaHeader: []
+      responses:
+        '200':
+          description: User's connection requests
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ConnectionRequestDto'
+    post:
+      summary: Send an invitation request (Idempotent via Idempotency-Key header)
+      security:
+        - PulsePersonaHeader: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateConnectionRequestCommand'
+      responses:
+        '201':
+          description: Request created (or returned idempotently)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectionRequestDto'
+        '409':
+          description: Invitation full, expired, paused, or duplicate request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+
+  /requests/{id}:
+    patch:
+      summary: Host accepts/declines or Requester cancels (Runs 1-Transaction Pessimistic Lock Flow on Accept)
+      security:
+        - PulsePersonaHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateConnectionRequestCommand'
+      responses:
+        '200':
+          description: Updated connection request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectionRequestDto'
+        '403':
+          description: Caller is not the host (for ACCEPT/DECLINE) or requester (for CANCEL)
+        '409':
+          description: Stale version or invitation reached full capacity
+
+  /requests/{id}/confirmations:
+    post:
+      summary: Save private follow-up confirmation (Did the conversation happen? Was it useful?)
+      security:
+        - PulsePersonaHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ParticipantConfirmationCommand'
+      responses:
+        '200':
+          description: Updated request with bilateral confirmation status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectionRequestDto'
+
+  /ai/assist:
+    post:
+      summary: Request optional AI draft/summary governed by the 720-action budget cap & always paired with template fallback
+      security:
+        - PulsePersonaHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiAssistanceRequest'
+      responses:
+        '200':
+          description: Labeled AI suggestion + deterministic non-AI template fallback
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiAssistanceResponse'
