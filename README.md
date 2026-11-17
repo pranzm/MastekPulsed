@@ -1,4 +1,10 @@
-# Mastek Pulse — Small Stories. Meaningful Connections.
+# Mastek Campfire — November engagement POC
+
+**Next development agent:** [Start here](docs/campfire/AGENT-START-HERE.md) · [17 November plan](docs/campfire/DEVELOPMENT-PLAN-2026-11-17.md)
+
+Start with [the demo guide](docs/campfire/DEMO-GUIDE.md) and [implementation stories](docs/campfire/IMPLEMENTATION-STORIES.md). The app opens a complete browser-local challenge/review/publish/recognition journey. Existing workflows remain accessible. Saathi cloud/voice adapters are absent in this baseline.
+
+# Mastek Campfire — Small Stories. Meaningful Connections.
 
 > **Android + iOS + Employee Web + Role-Based Publishing Portal | One Connected Core**
 > Built using an **AI-Driven Development Lifecycle (AI-DLC)** for multi-agent collaboration across **Claude Code**, **OpenAI Codex**, and **GitHub Copilot**.

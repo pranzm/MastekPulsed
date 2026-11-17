@@ -1,11 +1,15 @@
 import React, { useState } from 'react';
 import {
   AiAssistanceResponseDto,
+  AppMode,
   AudioChapter,
   AudioListenItemDto,
+  ChallengeDto,
   ConnectionRequestDto,
   ContentCardDto,
   HappenedAnswer,
+  LeaderboardResponseDto,
+  RecognitionProgressDto,
   UserProfileDto,
 } from '../api/contracts';
 import { pulseApi } from '../api/apiClient';
@@ -26,6 +30,11 @@ import {
   Volume2,
   PenTool,
   ShieldCheck,
+  Award,
+  Heart,
+  Flame,
+  EyeOff,
+  Eye,
 } from 'lucide-react';
 
 /**
@@ -35,7 +44,7 @@ import {
  * File: web/src/employee/EmployeeWorkspace.tsx
  * Journey: Responsive Employee Web Experience (Proposal Page 10) + All 8 Mobile
  *          Wireframe Flows (Proposal Pages 6, 7, 8, 9):
- *   - 01 / Your Pulse (`Pulse` tab): Search stories/interests, category filters
+ *   - 01 / Your Campfire (`Pulse` tab): Search stories/interests, category filters
  *     (`For you / Learning / Community / Updates`), factual `WHY THIS?` badge,
  *     and right-hand `Listen` card (`Mastek Radio` & `Culture Cast`).
  *   - 02 / Story Detail: Full story text, optional audio + transcript toggle,
@@ -57,11 +66,15 @@ import {
  */
 
 interface EmployeeWorkspaceProps {
+  appMode: AppMode;
   currentUser: UserProfileDto;
   feed: ContentCardDto[];
   radioQueues: AudioListenItemDto[];
   cultureCasts: AudioListenItemDto[];
   requests: ConnectionRequestDto[];
+  challenge: ChallengeDto | null;
+  myRecognition: RecognitionProgressDto | null;
+  leaderboard: LeaderboardResponseDto | null;
   activeAudio: AudioListenItemDto | null;
   isPlayingAudio: boolean;
   audioPositionSec: number;
@@ -70,14 +83,19 @@ interface EmployeeWorkspaceProps {
   onSeekAudio: (deltaSec: number) => void;
   onRefreshAll: () => Promise<void>;
   onSwitchPersona: (userId: string) => void;
+  onOpenPortal: () => void;
 }
 
 export const EmployeeWorkspace: React.FC<EmployeeWorkspaceProps> = ({
+  appMode,
   currentUser,
   feed,
   radioQueues,
   cultureCasts,
   requests,
+  challenge,
+  myRecognition,
+  leaderboard,
   activeAudio,
   isPlayingAudio,
   audioPositionSec,
@@ -86,10 +104,20 @@ export const EmployeeWorkspace: React.FC<EmployeeWorkspaceProps> = ({
   onSeekAudio,
   onRefreshAll,
   onSwitchPersona,
+  onOpenPortal,
 }) => {
-  const [activeNav, setActiveNav] = useState<'PULSE' | 'LISTEN' | 'CONNECT' | 'CONTRIBUTE' | 'PROFILE'>('PULSE');
+  const [activeNav, setActiveNav] = useState<'PULSE' | 'CHAMPIONS' | 'LISTEN' | 'CONNECT' | 'CONTRIBUTE' | 'PROFILE'>('PULSE');
   const [categoryFilter, setCategoryFilter] = useState<'FOR_YOU' | 'LEARNING' | 'COMMUNITY' | 'UPDATES'>('FOR_YOU');
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Campfire Weekly Challenge submission state (CF-002 / D4)
+  const [challengeTitle, setChallengeTitle] = useState<string>(
+    'What weekend badminton taught me about sprint pairing'
+  );
+  const [challengeBody, setChallengeBody] = useState<string>(
+    'Playing mixed doubles every Saturday taught me to communicate early and cover gaps without waiting to be asked. Our Pune engineering pod now uses the same habit during code reviews.'
+  );
+  const [submittingChallenge, setSubmittingChallenge] = useState<boolean>(false);
 
   // Wireframe 02 & 03: Selected Story & Invitation Composer state
   const [selectedStory, setSelectedStory] = useState<ContentCardDto | null>(null);
@@ -352,33 +380,104 @@ export const EmployeeWorkspace: React.FC<EmployeeWorkspaceProps> = ({
     }
   };
 
+  const handleSubmitChallengeEntry = async () => {
+    if (!challenge) return;
+    setSubmittingChallenge(true);
+    try {
+      const idemKey = `idem-ch-${currentUser.id}-${Date.now()}`;
+      const entry = await pulseApi.submitChallengeEntry(currentUser.id, challenge.id, idemKey, {
+        title: challengeTitle,
+        bodyText: challengeBody,
+        submitForReview: true,
+      });
+      await onRefreshAll();
+      showToast(
+        'success',
+        `Submitted Revision ${entry.revisionNumber} ("${entry.title}") to review! Points awarded now: 0 (+20 unlocks only after Priya approves & Marcus publishes).`
+      );
+    } catch (e: any) {
+      showToast('error', e.message || 'Challenge submission failed');
+    } finally {
+      setSubmittingChallenge(false);
+    }
+  };
+
+  const handleAppreciateStory = async (card: ContentCardDto) => {
+    try {
+      const res = await pulseApi.appreciateStory(currentUser.id, card.id);
+      await onRefreshAll();
+      if (res.alreadyAppreciated) {
+        showToast('info', `You already appreciated "${card.title}" (duplicate clicks add 0 points).`);
+      } else {
+        showToast(
+          'success',
+          `Appreciated "${card.title}"! You earned +${res.giverPointsDelta} pts; ${card.authorName.split(' ')[0]} earned +${res.receiverPointsDelta} pts.`
+        );
+      }
+    } catch (e: any) {
+      showToast('error', e.message || 'Could not appreciate story');
+    }
+  };
+
+  const handleToggleLeaderboardVisibility = async () => {
+    if (!myRecognition) return;
+    try {
+      const nextShow = !myRecognition.showOnLeaderboard;
+      await pulseApi.updateRecognitionPreferences(currentUser.id, nextShow);
+      await onRefreshAll();
+      showToast(
+        'info',
+        nextShow
+          ? 'Your ranking is now visible on the Community Champions leaderboard.'
+          : 'Opted out of public leaderboard — your private points and badges remain intact.'
+      );
+    } catch (e: any) {
+      showToast('error', e.message || 'Failed to update leaderboard preference');
+    }
+  };
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 pb-28">
       {/* Interactive Demo Walkthrough Banner for Hackathon Judges & Developers */}
       <div className="mb-6 bg-gradient-to-r from-[#002180] to-blue-800 text-white rounded-xl p-4 shadow-sm flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-blue-200">
-            <Sparkles className="w-4 h-4" /> Primary Demonstration Journey Guide
+            <Sparkles className="w-4 h-4" /> Mastek Campfire ({appMode.toUpperCase()} Mode) · Walkthrough Guide
           </div>
           <p className="text-sm mt-1 text-blue-50">
-            <strong>1. Discover:</strong> As <strong>Asha</strong>, open Daniel’s retrospective story below →{' '}
-            <strong>2. Invite:</strong> Send an invitation → <strong>3. Accept:</strong> Switch to{' '}
+            <strong>Campfire Loop:</strong> Open{' '}
+            <button
+              onClick={() => setActiveNav('CHAMPIONS')}
+              className="underline font-bold text-amber-300 hover:text-white"
+            >
+              Challenge & Champions
+            </button>{' '}
+            → Submit as <strong>Asha (0 pts)</strong> → Approve as{' '}
             <button
               onClick={() => {
-                onSwitchPersona('usr_daniel');
-                setActiveNav('CONNECT');
-                setConnectSubTab('RECEIVED');
+                onSwitchPersona('usr_priya');
+                onOpenPortal();
               }}
               className="underline font-semibold text-white hover:text-blue-200"
             >
-              Daniel (Host)
+              Priya (Reviewer)
             </button>{' '}
-            to Accept → <strong>4. Confirm:</strong> Both record private feedback!
+            → Publish as{' '}
+            <button
+              onClick={() => {
+                onSwitchPersona('usr_marcus');
+                onOpenPortal();
+              }}
+              className="underline font-semibold text-white hover:text-blue-200"
+            >
+              Marcus (Publisher)
+            </button>{' '}
+            (<strong>+20 pts & First Spark</strong>) → Appreciate stories (+5/+5)!
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <span className="text-xs bg-blue-900/70 border border-blue-400/30 px-2.5 py-1 rounded-full">
-            Active Persona: <strong>{currentUser.displayName}</strong> ({currentUser.region})
+            <strong>{currentUser.displayName}</strong> · {myRecognition?.points ?? 0}/60 pts
           </span>
         </div>
       </div>
@@ -405,7 +504,7 @@ export const EmployeeWorkspace: React.FC<EmployeeWorkspaceProps> = ({
         </div>
       )}
 
-      {/* Main Layout matching Proposal Page 10 ("05B / EMPLOYEE WEB WIREFRAME: Your Pulse. At your desk, too.") */}
+      {/* Main Layout matching Proposal Page 10 ("05B / EMPLOYEE WEB WIREFRAME: Your Campfire. At your desk, too.") */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left Navigation Sidebar (Desktop) & Top Pills (Mobile) */}
         <aside className="lg:col-span-2">
@@ -415,7 +514,12 @@ export const EmployeeWorkspace: React.FC<EmployeeWorkspaceProps> = ({
             </div>
             {(
               [
-                { id: 'PULSE', label: 'Your Pulse', badge: null },
+                { id: 'PULSE', label: 'Your Campfire', badge: null },
+                {
+                  id: 'CHAMPIONS',
+                  label: 'Challenge & Points',
+                  badge: `${myRecognition?.points ?? 0} pts`,
+                },
                 { id: 'LISTEN', label: 'Listen', badge: 'Radio + Cast' },
                 {
                   id: 'CONNECT',
@@ -457,10 +561,285 @@ export const EmployeeWorkspace: React.FC<EmployeeWorkspaceProps> = ({
         {/* Center Main Content Area */}
         <main className="lg:col-span-7 space-y-5">
           {/* =====================================================================
-              TAB 1: YOUR PULSE (Wireframes 01, 02, 03 & Page 10 Employee Web)
+              TAB: CHALLENGE & COMMUNITY CHAMPIONS (Proposal Pages 16 & 17 · D4 & D5)
+             ===================================================================== */}
+          {activeNav === 'CHAMPIONS' && (
+            <div className="space-y-5">
+              {/* Weekly Challenge Card */}
+              <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm space-y-4">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div>
+                    <div className="text-xs font-bold uppercase tracking-wider text-[#002180] flex items-center gap-1.5">
+                      <Flame className="w-4 h-4 text-amber-600" /> 10 / Weekly Campfire Challenge ({challenge?.weekStart || '2026-11-16'} UTC)
+                    </div>
+                    <h1 className="text-2xl font-bold text-slate-900 mt-1">
+                      {challenge?.title || 'Beyond My Job Title'}
+                    </h1>
+                    <p className="text-sm text-slate-600 mt-1">
+                      {challenge?.prompt ||
+                        'Share a hobby, a lesson, or someone who helped you beyond your immediate role. Participation is voluntary.'}
+                    </p>
+                  </div>
+                  <span className="text-xs font-bold bg-emerald-100 text-emerald-800 px-3 py-1 rounded-full">
+                    {challenge?.status || 'ACTIVE'} · Audience: {challenge?.audienceName || 'Colleagues in the Pilot'}
+                  </span>
+                </div>
+
+                {challenge?.myEntry ? (
+                  <div className="bg-blue-50/80 border border-blue-200 rounded-xl p-4 space-y-2 text-xs">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <span className="font-bold text-[#002180] text-sm">
+                        Your Challenge Entry: "{challenge.myEntry.title}" (Revision {challenge.myEntry.revisionNumber})
+                      </span>
+                      <span
+                        className={`px-2.5 py-0.5 rounded-full font-bold ${
+                          challenge.myEntry.status === 'PUBLISHED'
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : 'bg-amber-100 text-amber-900'
+                        }`}
+                      >
+                        Status: {challenge.myEntry.status} · Points Awarded: +{challenge.myEntry.pointsAwarded}
+                      </span>
+                    </div>
+                    <p className="text-slate-700">{challenge.myEntry.bodyText}</p>
+                    {challenge.myEntry.reviewerNotes && (
+                      <p className="text-amber-900 font-semibold">
+                        Reviewer Feedback: {challenge.myEntry.reviewerNotes}
+                      </p>
+                    )}
+                    {challenge.myEntry.status !== 'PUBLISHED' && (
+                      <div className="pt-2 flex flex-wrap gap-2">
+                        <button
+                          onClick={() => {
+                            onSwitchPersona('usr_priya');
+                            onOpenPortal();
+                          }}
+                          className="bg-[#002180] text-white px-3 py-1.5 rounded-lg font-semibold"
+                        >
+                          Switch to Priya (Reviewer) in Portal →
+                        </button>
+                        <button
+                          onClick={() => {
+                            onSwitchPersona('usr_marcus');
+                            onOpenPortal();
+                          }}
+                          className="bg-emerald-700 text-white px-3 py-1.5 rounded-lg font-semibold"
+                        >
+                          Switch to Marcus (Publisher) in Portal →
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+
+                {(!challenge?.myEntry || challenge.myEntry.status === 'DRAFT') && (
+                  <div className="border-t border-slate-200 pt-4 space-y-3">
+                    <div className="text-xs font-bold uppercase tracking-wider text-slate-600">
+                      {challenge?.myEntry?.status === 'DRAFT'
+                        ? 'Resubmit Updated Revision for Review'
+                        : 'Submit Your Challenge Story (Submission earns 0 pts; Publication unlocks +20 pts & First Spark)'}
+                    </div>
+                    <input
+                      type="text"
+                      value={challengeTitle}
+                      onChange={(e) => setChallengeTitle(e.target.value)}
+                      placeholder="Story title (5–100 characters)..."
+                      className="w-full rounded-lg border border-slate-300 px-3.5 py-2 text-sm font-semibold"
+                    />
+                    <textarea
+                      rows={3}
+                      value={challengeBody}
+                      onChange={(e) => setChallengeBody(e.target.value)}
+                      placeholder="Share your story (30–1,200 characters)..."
+                      className="w-full rounded-lg border border-slate-300 p-3.5 text-sm"
+                    />
+                    <button
+                      type="button"
+                      disabled={submittingChallenge}
+                      onClick={handleSubmitChallengeEntry}
+                      className="bg-[#002180] hover:bg-blue-900 disabled:opacity-50 text-white px-5 py-2.5 rounded-lg text-sm font-semibold shadow-sm"
+                    >
+                      {submittingChallenge
+                        ? 'Submitting...'
+                        : challenge?.myEntry?.status === 'DRAFT'
+                        ? 'Resubmit Revision for Review'
+                        : 'Submit Challenge Story for Review'}
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Personal Progress & Badges Card */}
+              {myRecognition && (
+                <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm space-y-4">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div>
+                      <h2 className="text-xl font-bold text-[#002180] flex items-center gap-2">
+                        <Award className="w-5 h-5" /> Your Weekly Progress ({myRecognition.displayName})
+                      </h2>
+                      <p className="text-xs text-slate-600">
+                        Week of {myRecognition.weekStart} ({myRecognition.timezone}) · Maximum 60 points/week. Points
+                        never represent employee appraisal performance.
+                      </p>
+                    </div>
+                    <div className="text-2xl font-extrabold text-[#002180]">
+                      {myRecognition.points} <span className="text-xs font-normal text-slate-500">/ 60 pts</span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                    <div className="p-3.5 rounded-xl bg-blue-50/70 border border-blue-200">
+                      <div className="font-bold text-slate-600">Published Contribution</div>
+                      <div className="text-xl font-extrabold text-[#002180] mt-1">
+                        +{myRecognition.contributionPoints} / 20 pts
+                      </div>
+                      <div className="text-slate-500 mt-0.5">Once per week after human review & publication</div>
+                    </div>
+                    <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+                      <div className="font-bold text-slate-600">Give Appreciation (+5)</div>
+                      <div className="text-xl font-extrabold text-slate-900 mt-1">
+                        +{myRecognition.givingPoints} / 15 pts
+                      </div>
+                      <div className="text-slate-500 mt-0.5">
+                        {myRecognition.givenCount} stories appreciated ({myRecognition.distinctTeamsSupported} teams)
+                      </div>
+                    </div>
+                    <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+                      <div className="font-bold text-slate-600">Receive Appreciation (+5)</div>
+                      <div className="text-xl font-extrabold text-slate-900 mt-1">
+                        +{myRecognition.receivingPoints} / 25 pts
+                      </div>
+                      <div className="text-slate-500 mt-0.5">
+                        From {myRecognition.receivedDistinctCount} distinct colleagues
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-100">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs font-bold text-slate-600">Unlocked Milestones:</span>
+                      {myRecognition.badges.length === 0 ? (
+                        <span className="text-xs text-slate-500">
+                          None yet (Publish a story for First Spark; appreciate 3 teams for Connection Maker; receive 5
+                          colleague appreciations for Community Favourite)
+                        </span>
+                      ) : (
+                        myRecognition.badges.map((b) => (
+                          <span
+                            key={b}
+                            className="bg-amber-100 text-amber-900 border border-amber-300 px-3 py-1 rounded-full text-xs font-bold"
+                          >
+                            ★ {b}
+                          </span>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Community Champions Leaderboard Card (Page 17 · CF-007) */}
+              {leaderboard && (
+                <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm space-y-4">
+                  <div className="flex items-center justify-between flex-wrap gap-3">
+                    <div>
+                      <h2 className="text-xl font-bold text-[#002180]">
+                        11 / Community Champions (Top 5 Optional Leaderboard)
+                      </h2>
+                      <p className="text-xs text-slate-600">
+                        Audience: {leaderboard.audienceId} · Week starting {leaderboard.weekStart} ({leaderboard.timezone}
+                        ). Tied scores share a rank.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleToggleLeaderboardVisibility}
+                      className="px-3.5 py-2 rounded-lg border border-slate-300 hover:bg-slate-100 text-xs font-semibold flex items-center gap-1.5"
+                    >
+                      {myRecognition?.showOnLeaderboard ? (
+                        <>
+                          <EyeOff className="w-3.5 h-3.5 text-slate-700" /> Hide my public ranking
+                        </>
+                      ) : (
+                        <>
+                          <Eye className="w-3.5 h-3.5 text-[#002180]" /> Show my public ranking
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  <div className="space-y-2">
+                    {leaderboard.entries.map((row) => (
+                      <div
+                        key={row.userId}
+                        className={`p-3.5 rounded-xl border flex items-center justify-between gap-3 text-sm ${
+                          row.userId === currentUser.id
+                            ? 'bg-blue-50/80 border-[#002180] font-semibold'
+                            : 'bg-slate-50 border-slate-200'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <span className="w-7 h-7 rounded-full bg-[#002180] text-white text-xs font-bold flex items-center justify-center">
+                            #{row.rank}
+                          </span>
+                          <div>
+                            <div className="font-bold text-slate-900">
+                              {row.displayName}{' '}
+                              <span className="text-xs font-normal text-slate-500">
+                                ({row.functionName} · {row.region})
+                              </span>
+                            </div>
+                            {row.badges.length > 0 && (
+                              <div className="flex flex-wrap gap-1.5 mt-1">
+                                {row.badges.map((b) => (
+                                  <span
+                                    key={b}
+                                    className="text-[11px] bg-amber-100 text-amber-900 px-2 py-0.5 rounded-full font-semibold"
+                                  >
+                                    ★ {b}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                        <div className="text-base font-extrabold text-[#002180]">{row.points} pts</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* =====================================================================
+              TAB 1: YOUR CAMPFIRE (Wireframes 01, 02, 03 & Page 10 Employee Web)
              ===================================================================== */}
           {activeNav === 'PULSE' && !selectedStory && !composingInviteFor && (
             <>
+              {/* Compact Weekly Challenge Callout Card */}
+              {challenge && (
+                <div className="bg-amber-50/90 border border-amber-300 rounded-xl p-4 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-bold uppercase tracking-wider text-amber-900 flex items-center gap-1">
+                      <Flame className="w-4 h-4 text-amber-600" /> Weekly Challenge: {challenge.title}
+                    </div>
+                    <p className="text-xs text-amber-950 mt-0.5">
+                      {challenge.myEntry
+                        ? `Your entry "${challenge.myEntry.title}" is ${challenge.myEntry.status} (+${challenge.myEntry.pointsAwarded} pts).`
+                        : 'Share a story beyond your job title! Publishing earns +20 pts & First Spark.'}{' '}
+                      Your weekly score: <strong>{myRecognition?.points ?? 0}/60 pts</strong>.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setActiveNav('CHAMPIONS')}
+                    className="bg-[#002180] hover:bg-blue-900 text-white px-3.5 py-2 rounded-lg text-xs font-bold shrink-0"
+                  >
+                    Open Challenge & Leaderboard →
+                  </button>
+                </div>
+              )}
+
               <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                   <div>
@@ -594,6 +973,22 @@ export const EmployeeWorkspace: React.FC<EmployeeWorkspaceProps> = ({
                         {card.contentType === 'UPDATE' ? 'Read the brief >' : 'Read story >'}
                       </button>
 
+                      {card.contentType === 'STORY' && (
+                        <button
+                          onClick={() => handleAppreciateStory(card)}
+                          disabled={card.authorId === currentUser.id}
+                          title={
+                            card.authorId === currentUser.id
+                              ? 'Self-appreciation is disallowed'
+                              : 'Give colleague appreciation (+5 pts up to 3 stories/week)'
+                          }
+                          className="bg-amber-50 hover:bg-amber-100 disabled:opacity-50 text-amber-900 border border-amber-300 px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-1.5"
+                        >
+                          <Heart className="w-3.5 h-3.5 text-amber-600" />
+                          {card.authorId === currentUser.id ? 'Your story' : 'Appreciate (+5)'}
+                        </button>
+                      )}
+
                       {card.contentType === 'UPDATE' && (
                         <button
                           onClick={() => handleSummarizeUpdate(card)}
@@ -623,7 +1018,7 @@ export const EmployeeWorkspace: React.FC<EmployeeWorkspaceProps> = ({
                 onClick={() => setSelectedStory(null)}
                 className="text-sm font-semibold text-[#002180] flex items-center gap-1.5 hover:underline"
               >
-                <ArrowLeft className="w-4 h-4" /> &lt; Story (Back to Your Pulse)
+                <ArrowLeft className="w-4 h-4" /> &lt; Story (Back to Your Campfire)
               </button>
 
               <div className="border-b border-slate-200 pb-4">
@@ -1257,7 +1652,7 @@ export const EmployeeWorkspace: React.FC<EmployeeWorkspaceProps> = ({
                       <p className="text-xs text-slate-500">
                         {connectSubTab === 'RECEIVED'
                           ? 'Tip: If Asha sent an invitation to Daniel, switch active persona to Daniel Wright in the top bar to see it in Received!'
-                          : 'Explore a story on Your Pulse and click "Write an invitation" to connect.'}
+                          : 'Explore a story on Your Campfire and click "Write an invitation" to connect.'}
                       </p>
                     </div>
                   );

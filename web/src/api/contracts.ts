@@ -203,3 +203,102 @@ export interface AuditEventDto {
   details: string;
   createdAt: string;
 }
+
+/**
+ * ============================================================================
+ * CAMPFIRE ENGAGEMENT & RECOGNITION CONTRACTS (17 November 2026 — CF-002..CF-007)
+ * ============================================================================
+ */
+export type AppMode = 'demo' | 'live';
+
+export interface ProblemDetailDto {
+  status: number;
+  code: string;
+  message: string;
+  timestamp: string;
+}
+
+export class PulseHttpError extends Error {
+  public readonly status: number;
+  public readonly code: string;
+
+  constructor(status: number, code: string, message: string) {
+    super(message);
+    this.name = 'PulseHttpError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+export interface ChallengeEntryDto {
+  entryId: string;
+  challengeId: string;
+  contentId: string;
+  revisionNumber: number;
+  status: ContentStatus;
+  title: string;
+  summary: string;
+  bodyText: string;
+  audienceId: string;
+  reviewerNotes?: string | null;
+  pointsAwarded: number;
+}
+
+export interface ChallengeDto {
+  id: string;
+  title: string;
+  prompt: string;
+  startsAt: string;
+  endsAt: string;
+  timezone: string;
+  weekStart: string;
+  audienceId: string;
+  audienceName: string;
+  status: 'ACTIVE' | 'CLOSED';
+  myEntry?: ChallengeEntryDto | null;
+}
+
+export interface RecognitionProgressDto {
+  userId: string;
+  displayName: string;
+  weekStart: string;
+  timezone: string;
+  points: number;
+  contributionPoints: number;
+  givenCount: number;
+  givingPoints: number;
+  receivedDistinctCount: number;
+  receivingPoints: number;
+  distinctTeamsSupported: number;
+  badges: string[];
+  showOnLeaderboard: boolean;
+}
+
+export interface AppreciationResultDto {
+  appreciationId: string;
+  contentId: string;
+  actorId: string;
+  recipientId: string;
+  weekStart: string;
+  alreadyAppreciated: boolean;
+  giverPointsDelta: number;
+  receiverPointsDelta: number;
+  actorProgress: RecognitionProgressDto;
+}
+
+export interface LeaderboardRowDto {
+  rank: number;
+  userId: string;
+  displayName: string;
+  functionName: string;
+  region: string;
+  points: number;
+  badges: string[];
+}
+
+export interface LeaderboardResponseDto {
+  weekStart: string;
+  timezone: string;
+  audienceId: string;
+  entries: LeaderboardRowDto[];
+}

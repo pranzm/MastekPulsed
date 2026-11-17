@@ -12,12 +12,13 @@
 
 openapi: 3.1.0
 info:
-  title: Mastek Pulse Core API
-  version: 1.0.0
+  title: Mastek Campfire Core API
+  version: 1.1.0
   description: |
-    Unified REST API for **Mastek Pulse** (Android, iOS, Employee Web, and Role-Based Publishing Portal).
+    Unified REST API for **Mastek Campfire** (Android, iOS, Employee Web, and Role-Based Publishing Portal).
     Enforces audience permissions before ranking, revision-bound approvals, idempotent connection requests,
-    pessimistic row locking (`FOR UPDATE`) on host capacity, bilateral usefulness confirmations, and the 720-action AI budget cap.
+    pessimistic row locking (`FOR UPDATE`) on host capacity, bilateral usefulness confirmations, the 720-action AI budget cap,
+    and weekly Campfire challenges & community recognition (+20 published contribution, +5/+5 appreciation caps, 3 badges, optional Community Champions leaderboard).
 
 servers:
   - url: http://localhost:8080/api/v1
@@ -337,6 +338,187 @@ components:
             hardCapReached:
               type: boolean
 
+    ChallengeEntryDto:
+      type: object
+      required: [entryId, challengeId, contentId, revisionNumber, status, title, summary, bodyText, audienceId, pointsAwarded]
+      properties:
+        entryId:
+          type: string
+        challengeId:
+          type: string
+        contentId:
+          type: string
+        revisionNumber:
+          type: integer
+        status:
+          type: string
+          enum: [DRAFT, IN_REVIEW, APPROVED, SCHEDULED, PUBLISHED, WITHDRAWN]
+        title:
+          type: string
+        summary:
+          type: string
+        bodyText:
+          type: string
+        audienceId:
+          type: string
+        reviewerNotes:
+          type: string
+          nullable: true
+        pointsAwarded:
+          type: integer
+          example: 0
+
+    ChallengeDto:
+      type: object
+      required: [id, title, prompt, startsAt, endsAt, timezone, weekStart, audienceId, audienceName, status]
+      properties:
+        id:
+          type: string
+          example: "ch_beyond_01"
+        title:
+          type: string
+          example: "Beyond My Job Title"
+        prompt:
+          type: string
+          example: "Share a hobby, a lesson, or someone who helped you beyond your immediate role. Participation is voluntary."
+        startsAt:
+          type: string
+          format: date-time
+        endsAt:
+          type: string
+          format: date-time
+        timezone:
+          type: string
+          example: "UTC"
+        weekStart:
+          type: string
+          example: "2026-11-16"
+        audienceId:
+          type: string
+          example: "aud_pilot"
+        audienceName:
+          type: string
+          example: "Colleagues in the Pilot"
+        status:
+          type: string
+          enum: [ACTIVE, CLOSED]
+        myEntry:
+          $ref: '#/components/schemas/ChallengeEntryDto'
+
+    CreateChallengeEntryCommand:
+      type: object
+      required: [title, bodyText]
+      properties:
+        title:
+          type: string
+          minLength: 5
+          maxLength: 100
+        bodyText:
+          type: string
+          minLength: 30
+          maxLength: 1200
+        submitForReview:
+          type: boolean
+          default: true
+
+    RecognitionProgressDto:
+      type: object
+      required: [userId, displayName, weekStart, timezone, points, contributionPoints, givenCount, givingPoints, receivedDistinctCount, receivingPoints, distinctTeamsSupported, badges, showOnLeaderboard]
+      properties:
+        userId:
+          type: string
+        displayName:
+          type: string
+        weekStart:
+          type: string
+          example: "2026-11-16"
+        timezone:
+          type: string
+          example: "UTC"
+        points:
+          type: integer
+          maximum: 60
+        contributionPoints:
+          type: integer
+          maximum: 20
+        givenCount:
+          type: integer
+        givingPoints:
+          type: integer
+          maximum: 15
+        receivedDistinctCount:
+          type: integer
+        receivingPoints:
+          type: integer
+          maximum: 25
+        distinctTeamsSupported:
+          type: integer
+        badges:
+          type: array
+          items:
+            type: string
+        showOnLeaderboard:
+          type: boolean
+
+    AppreciationResultDto:
+      type: object
+      required: [appreciationId, contentId, actorId, recipientId, weekStart, alreadyAppreciated, giverPointsDelta, receiverPointsDelta, actorProgress]
+      properties:
+        appreciationId:
+          type: string
+        contentId:
+          type: string
+        actorId:
+          type: string
+        recipientId:
+          type: string
+        weekStart:
+          type: string
+        alreadyAppreciated:
+          type: boolean
+        giverPointsDelta:
+          type: integer
+        receiverPointsDelta:
+          type: integer
+        actorProgress:
+          $ref: '#/components/schemas/RecognitionProgressDto'
+
+    LeaderboardRowDto:
+      type: object
+      required: [rank, userId, displayName, functionName, region, points, badges]
+      properties:
+        rank:
+          type: integer
+        userId:
+          type: string
+        displayName:
+          type: string
+        functionName:
+          type: string
+        region:
+          type: string
+        points:
+          type: integer
+        badges:
+          type: array
+          items:
+            type: string
+
+    LeaderboardResponseDto:
+      type: object
+      required: [weekStart, timezone, audienceId, entries]
+      properties:
+        weekStart:
+          type: string
+        timezone:
+          type: string
+        audienceId:
+          type: string
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/LeaderboardRowDto'
+
 paths:
   /me:
     get:
@@ -496,3 +678,143 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AiAssistanceResponse'
+
+  /challenges/current:
+    get:
+      summary: Get active weekly Campfire challenge for caller's permitted audiences and caller's entry summary
+      security:
+        - PulsePersonaHeader: []
+      responses:
+        '200':
+          description: Active challenge details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChallengeDto'
+
+  /challenges/{id}/entries:
+    post:
+      summary: Submit or resubmit a challenge story via the revision-bound editorial workflow (0 points until published)
+      security:
+        - PulsePersonaHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateChallengeEntryCommand'
+      responses:
+        '201':
+          description: Challenge entry created (or updated after requested changes)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChallengeEntryDto'
+        '403':
+          description: Caller is not in challenge audience
+        '409':
+          description: Challenge closed, duplicate entry in review/published, or conflicting idempotency payload
+        '422':
+          description: Title/body validation failed
+
+  /content/{id}/appreciations:
+    post:
+      summary: Appreciate an authorized published story (+5 giver up to 3/wk, +5 receiver up to 5 distinct colleagues/wk)
+      security:
+        - PulsePersonaHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Appreciation recorded (idempotent on repeat by same actor)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppreciationResultDto'
+        '403':
+          description: Caller lacks access to published story audience
+        '404':
+          description: Story not found, unpublished, or withdrawn
+        '422':
+          description: Self-appreciation is disallowed
+
+  /recognition/me:
+    get:
+      summary: Get caller's private weekly recognition points breakdown, badge progress, and leaderboard visibility preference
+      security:
+        - PulsePersonaHeader: []
+      parameters:
+        - name: week
+          in: query
+          required: false
+          schema:
+            type: string
+            example: "2026-11-16"
+      responses:
+        '200':
+          description: Private recognition progress
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecognitionProgressDto'
+
+  /recognition/leaderboard:
+    get:
+      summary: Get top 5 opted-in Community Champions for an authorized audience and UTC Monday week
+      security:
+        - PulsePersonaHeader: []
+      parameters:
+        - name: week
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: audienceId
+          in: query
+          required: false
+          schema:
+            type: string
+            default: "aud_pilot"
+      responses:
+        '200':
+          description: Top 5 leaderboard with shared tie ranks
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LeaderboardResponseDto'
+        '403':
+          description: Caller is not permitted to view the requested audience
+
+  /recognition/preferences:
+    put:
+      summary: Set showOnLeaderboard preference explicitly (idempotent PUT)
+      security:
+        - PulsePersonaHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [showOnLeaderboard]
+              properties:
+                showOnLeaderboard:
+                  type: boolean
+      responses:
+        '200':
+          description: Updated recognition progress and preference
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecognitionProgressDto'

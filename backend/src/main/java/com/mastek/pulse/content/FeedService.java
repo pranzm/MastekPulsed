@@ -14,19 +14,19 @@ import java.util.*;
  * ============================================================================
  * File: FeedService.java
  * Journey: Primary Journey Step 1 ("Discover a story -> understand why it is relevant"
- *          - Proposal Pages 4, 6, 10, 14).
+ *          - Proposal Pages 4, 6, 10, 14 + Campfire CF-010 / D2).
  * Why it is designed this way:
- *   Implements the exact 3-stage pipeline from Proposal Page 4:
+ *   Implements the 3-stage pipeline from Proposal Page 4 and D2 Visibility Policy:
  *   1. FILTER ("Permission and capacity"): Queries ONLY `PUBLISHED` items whose
- *      `audience_id` is in the caller's permitted audiences. Restricted items
- *      (like `story_08` in `aud_uk_restricted`) are filtered out BEFORE ranking!
- *   2. RANK ("Interests and intent"): Scores items deterministically based on
- *      matching explicit profile interests (`team learning`, `innovation`, `culture`)
- *      and whether the story has an OPEN invitation with remaining capacity.
- *   3. EXPLAIN ("Verified reasons only"): Builds a factual explanation grounded
- *      strictly in real profile fields and host capacity (e.g., "WHY THIS? Your
- *      interest: team learning · 15 min conversation / 2 places available") —
- *      never an invented percentage compatibility score!
+ *      immutable `published_audience_id` is in the caller's permitted audiences.
+ *      Draft audience edits on an unapproved replacement revision never broaden
+ *      access to the previously published revision!
+ *   2. PUBLISHED SNAPSHOT ONLY: `getStoryDetail` strictly requires `PUBLISHED`
+ *      status and `publishedVersion != null` (via `identityService.requirePublishedVisibility`).
+ *      Unpublished drafts or withdrawn stories throw `404` on employee detail reads,
+ *      while owners and scoped editors can use `getContentPreview` (`GET /api/v1/content/{id}/preview`).
+ *   3. RANK & EXPLAIN: Ranks by explicit interests + open capacity and builds
+ *      a grounded factual explanation ("WHY THIS? Your interest: team learning").
  * ============================================================================
  */
 @Service
@@ -55,8 +55,10 @@ public class FeedService {
 
     @Transactional(readOnly = true)
     public List<Map<String, Object>> getPersonalizedFeed(UserEntity caller, String category, String query) {
-        // STEP 1: FILTER BY AUDIENCE PERMISSIONS FIRST ("Audience filter before rank")
         List<String> permittedAudiences = identityService.getPermittedAudiences(caller.getId());
+        if (permittedAudiences.isEmpty()) {
+            return List.of();
+        }
         List<ContentItemEntity> publishedItems = contentItemRepository
                 .findByAudienceIdInAndStatusOrderByPublishedAtDesc(permittedAudiences, "PUBLISHED");
 
@@ -73,7 +75,14 @@ public class FeedService {
         List<ScoredCard> scoredCards = new ArrayList<>();
 
         for (ContentItemEntity item : publishedItems) {
-            // Only STORIES and UPDATES appear in the main Pulse feed (Radio & Culture Cast are in Listen)
+            if (item.getPublishedVersion() == null || !"PUBLISHED".equals(item.getStatus())) {
+                continue;
+            }
+            String pubAudienceId = item.getEffectivePublishedAudienceId();
+            if (!permittedAudiences.contains(pubAudienceId)) {
+                continue;
+            }
+
             if (!"STORY".equals(item.getContentType()) && !"UPDATE".equals(item.getContentType())) {
                 continue;
             }
@@ -85,15 +94,13 @@ public class FeedService {
                 continue;
             }
 
-            int versionToRead = item.getPublishedVersion() != null ? item.getPublishedVersion() : item.getCurrentVersion();
             Optional<ContentRevisionEntity> revOpt = contentRevisionRepository
-                    .findByContentIdAndVersionNumber(item.getId(), versionToRead);
+                    .findByContentIdAndVersionNumber(item.getId(), item.getPublishedVersion());
             if (revOpt.isEmpty()) {
                 continue;
             }
             ContentRevisionEntity rev = revOpt.get();
 
-            // Optional category filter
             List<String> itemTags = rev.getTagsList().stream().map(String::toLowerCase).toList();
             if ("LEARNING".equalsIgnoreCase(category)
                     && !itemTags.contains("team learning") && !itemTags.contains("delivery excellence")) {
@@ -104,7 +111,6 @@ public class FeedService {
                 continue;
             }
 
-            // Optional search query filter
             if (query != null && !query.isBlank()) {
                 String qLower = query.trim().toLowerCase();
                 boolean matchesTitle = rev.getTitle().toLowerCase().contains(qLower);
@@ -115,7 +121,6 @@ public class FeedService {
                 }
             }
 
-            // STEP 2 & 3: RANK BY EXPLICIT INTERESTS + CAPACITY, AND GENERATE FACTUAL EXPLANATION
             List<String> matchedInterests = itemTags.stream()
                     .filter(userInterests::contains)
                     .toList();
@@ -128,12 +133,12 @@ public class FeedService {
             if (invOpt.isPresent() && invOpt.get().isOpenForRequests(hostPaused)) {
                 score += 25;
                 if (!item.getAuthorId().equals(caller.getId())) {
-                    score += 10; // Boost cross-team stories with open invitation capacity
+                    score += 10;
                 }
             }
 
             String factualExplanation = buildFactualExplanation(matchedInterests, invOpt.orElse(null), hostPaused, item, rev);
-            Map<String, Object> dto = toContentCardDto(item, rev, author, audienceMap.get(item.getAudienceId()), invOpt.orElse(null), factualExplanation);
+            Map<String, Object> dto = toContentCardDto(item, rev, author, audienceMap.get(pubAudienceId), invOpt.orElse(null), factualExplanation);
             scoredCards.add(new ScoredCard(score, dto));
         }
 
@@ -141,21 +146,26 @@ public class FeedService {
         return scoredCards.stream().map(ScoredCard::card).toList();
     }
 
+    /**
+     * Employee detail read: strictly requires PUBLISHED status and reads ONLY
+     * `item.getPublishedVersion()` and `item.getEffectivePublishedAudienceId()`.
+     * Never falls back to `currentVersion`!
+     */
     @Transactional(readOnly = true)
     public Map<String, Object> getStoryDetail(UserEntity caller, String storyId) {
         ContentItemEntity item = contentItemRepository.findById(storyId)
                 .orElseThrow(() -> PulseException.notFound("404: Story not found: " + storyId));
 
-        // Enforce strict Audience check first! Throws 403 if caller is not in item's audience.
-        identityService.requireAudienceAccess(caller, item.getAudienceId());
+        identityService.requirePublishedVisibility(caller, item);
 
-        int versionToRead = item.getPublishedVersion() != null ? item.getPublishedVersion() : item.getCurrentVersion();
+        int publishedVer = item.getPublishedVersion();
         ContentRevisionEntity rev = contentRevisionRepository
-                .findByContentIdAndVersionNumber(item.getId(), versionToRead)
-                .orElseThrow(() -> PulseException.notFound("404: Revision not found for story: " + storyId));
+                .findByContentIdAndVersionNumber(item.getId(), publishedVer)
+                .orElseThrow(() -> PulseException.notFound("404: Published revision not found for story: " + storyId));
 
         UserEntity author = userRepository.findById(item.getAuthorId()).orElse(null);
-        AudienceEntity audience = audienceRepository.findById(item.getAudienceId()).orElse(null);
+        String pubAudienceId = item.getEffectivePublishedAudienceId();
+        AudienceEntity audience = audienceRepository.findById(pubAudienceId).orElse(null);
         InvitationEntity inv = invitationRepository.findByStoryId(item.getId()).orElse(null);
 
         List<String> userInterests = caller.getInterestsList().stream().map(String::toLowerCase).toList();
@@ -164,6 +174,26 @@ public class FeedService {
 
         String explanation = buildFactualExplanation(matched, inv, hostPaused, item, rev);
         return toContentCardDto(item, rev, author, audience, inv, explanation);
+    }
+
+    /**
+     * Distinct owner / scoped editor preview policy for unpublished drafts or revisions in review.
+     */
+    @Transactional(readOnly = true)
+    public Map<String, Object> getContentPreview(UserEntity caller, String contentId) {
+        ContentItemEntity item = contentItemRepository.findById(contentId)
+                .orElseThrow(() -> PulseException.notFound("404: Content item not found: " + contentId));
+
+        identityService.requirePreviewVisibility(caller, item);
+
+        ContentRevisionEntity rev = contentRevisionRepository
+                .findByContentIdAndVersionNumber(item.getId(), item.getCurrentVersion())
+                .orElseThrow(() -> PulseException.notFound("404: Revision not found: " + contentId));
+
+        UserEntity author = userRepository.findById(item.getAuthorId()).orElse(null);
+        AudienceEntity audience = audienceRepository.findById(item.getAudienceId()).orElse(null);
+        InvitationEntity inv = invitationRepository.findByStoryId(item.getId()).orElse(null);
+        return toContentCardDto(item, rev, author, audience, inv, "Owner / Editorial Preview (Revision " + rev.getVersionNumber() + ")");
     }
 
     private String buildFactualExplanation(List<String> matchedInterests,
@@ -202,6 +232,10 @@ public class FeedService {
                                                 AudienceEntity audience,
                                                 InvitationEntity inv,
                                                 String factualExplanation) {
+        String effectiveAudienceId = "PUBLISHED".equals(item.getStatus()) && rev.getVersionNumber() == (item.getPublishedVersion() != null ? item.getPublishedVersion() : -1)
+                ? item.getEffectivePublishedAudienceId()
+                : item.getAudienceId();
+
         Map<String, Object> map = new LinkedHashMap<>();
         map.put("id", item.getId());
         map.put("contentType", item.getContentType());
@@ -214,8 +248,8 @@ public class FeedService {
         map.put("authorName", author != null ? author.getDisplayName() : item.getAuthorId());
         map.put("authorFunction", author != null ? author.getFunctionName() : "Colleague");
         map.put("authorRegion", author != null ? author.getRegion() : "GLOBAL");
-        map.put("audienceId", item.getAudienceId());
-        map.put("audienceName", audience != null ? audience.getName() : item.getAudienceId());
+        map.put("audienceId", effectiveAudienceId);
+        map.put("audienceName", audience != null ? audience.getName() : effectiveAudienceId);
         map.put("tags", rev.getTagsList());
         map.put("status", item.getStatus());
         map.put("currentVersion", item.getCurrentVersion());

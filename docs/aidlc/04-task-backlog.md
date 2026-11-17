@@ -1,4 +1,4 @@
-# Mastek Pulse — AI-DLC Phase 3: Atomic Task Backlog & Parallel Developer Plan
+# Mastek Campfire — AI-DLC Phase 3: Atomic Task Backlog & Parallel Developer Plan
 
 > **🎓 Intern & AI Agent Guide:**
 > In AI-DLC, we never tell an AI agent: *"Go build the whole app."* That leads to hallucinations, missing edge cases, and messy code.
@@ -126,3 +126,21 @@ Once **Epic 1 (Foundation & Contracts)** is completed, 3 to 4 developers using C
 - [x] **TASK-601: React Native App with 5 Bottom Tabs (`Pulse`, `Listen`, `Connect`, `Publish`, `Profile`) & Native Audio**
   - **Target:** `mobile/`
   - **Details:** Share the exact TypeScript API contracts from `docs/aidlc/02-domain-model-and-contracts.md`. Implement all 8 mobile wireframes (Pages 6–9), local draft storage, native background audio playback (`expo-av`), and cross-device playback resume with the Spring Boot backend.
+
+## Epic 7: Campfire engagement, recognition and Saathi
+
+Detailed acceptance criteria and dependencies: [CF-001–CF-012](../campfire/IMPLEMENTATION-STORIES.md).
+
+- [x] Browser-only engagement demonstration, synthetic role simulation, scoring and badges (`CF-001`).
+- [x] Optional browser leaderboard, opt-out, reset and typed Saathi fallback (`CF-001`).
+- [x] CF-002–CF-007: integrate challenges and recognition with Java APIs and PostgreSQL (`V3__campfire_challenges_and_recognition.sql`, `ChallengeService`, `RecognitionService`, `CampfireChallengeAndRecognitionTest` verified on H2 and PostgreSQL 16.16).
+- [x] CF-003 / CF-010: explicit live/demo transports (`PulseHttpError`, no silent fallback in live mode, role-aware loading) and shared authorization policy (`403` portal access for ordinary employees, `published_audience_id` isolation, published-only employee & Saathi reads, `/preview` endpoint).
+- [ ] CF-008 / CF-009: reconcile the missing voice branch (`voice-service/`) and enforce voice moderation policy (Blocked: external branch not present in workspace).
+- [x] CF-011: full-stack demonstration verified across standalone browser demo and live React + Spring Boot + PostgreSQL 16 stack (see [DAILY-RESULTS-2026-11-17.md](../campfire/DAILY-RESULTS-2026-11-17.md)).
+- [ ] CF-012: 6-week pilot telemetry and measured pilot outcomes (Post-POC pilot execution).
+
+## Ordered Execution Plan Status — 17 November 2026
+
+See [D0–D6](../campfire/DEVELOPMENT-PLAN-2026-11-17.md) and verified execution evidence in [DAILY-RESULTS-2026-11-17.md](../campfire/DAILY-RESULTS-2026-11-17.md):
+- **D0–D5 Completed & Verified** (`11/11` Node tests, `7/7` Java integration tests on H2 and PostgreSQL 16.16, `npm --prefix web run build` clean).
+- **D6 Blocked** on missing external `voice-service/` branch.

@@ -9,8 +9,10 @@ Before planning or editing any file, always read our Single Source of Truth in `
 1. [`docs/aidlc/01-inception-vision-and-scope.md`](docs/aidlc/01-inception-vision-and-scope.md) — Product vision, primary/supporting journeys, strict POC scope vs. deferred features, and the 5 synthetic personas (`usr_asha`, `usr_daniel`, `usr_priya`, `usr_marcus`, `usr_elena`).
 2. [`docs/aidlc/02-domain-model-and-contracts.md`](docs/aidlc/02-domain-model-and-contracts.md) — Exact PostgreSQL tables, state machines (`content_items.status` and `connection_requests.state`), the 4-step transactional Accept Flow (`SELECT ... FOR UPDATE`), and REST API endpoints (`401`, `403`, `409`, `422`).
 3. [`docs/aidlc/03-architecture-and-guardrails.md`](docs/aidlc/03-architecture-and-guardrails.md) — Monorepo layout (`backend/`, `web/`, `mobile/`), 10,000-user scaling patterns (Java 21 Virtual Threads, Signed URLs, Transactional Outbox), security guardrails, and intern documentation standard.
-4. [`docs/aidlc/04-task-backlog.md`](docs/aidlc/04-task-backlog.md) — Atomic task checklist (`TASK-101` through `TASK-601`).
-5. [`learn.md`](learn.md) — Our living AI-DLC classroom textbook and Architectural Decision Log (ADRs).
+4. [`docs/aidlc/05-complete-code-flow-and-ascii-diagrams.md`](docs/aidlc/05-complete-code-flow-and-ascii-diagrams.md) — End-to-end ASCII code flows across all 8 Java packages (`common`, `content`, `challenge`, `recognition`, `connection`, `listen`, `ai`, `outbox`), the 19-table PostgreSQL ER diagram (`V1`+`V2`+`V3`), and the 4 frontend surfaces.
+5. [`docs/aidlc/06-mvp-and-scalability-plan.md`](docs/aidlc/06-mvp-and-scalability-plan.md) — Production MVP roadmap (Sprints 1–4) and Dual-Axis Scalability Blueprint (User Scale: 50 -> 10,000+ users; Feature Scale: plug-and-play ports/adapters).
+6. [`docs/aidlc/04-task-backlog.md`](docs/aidlc/04-task-backlog.md) — Atomic task checklist (`TASK-101` through `TASK-601` + `CF-001` through `CF-012`).
+7. [`learn.md`](learn.md) — Our living AI-DLC classroom textbook and Architectural Decision Log (ADRs).
 
 ---
 

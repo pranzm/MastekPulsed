@@ -596,7 +596,7 @@ export const PublishingPortalWorkspace: React.FC<PublishingPortalProps> = ({
                     <button
                       key={btn.level}
                       onClick={async () => {
-                        await pulseApi.simulateAiBudgetLevel(btn.level);
+                        await pulseApi.simulateAiBudgetLevel(currentUser.id, btn.level);
                         await onRefreshAll();
                         showAlert('info', `Simulated AI Budget Level: ${btn.label}`);
                       }}

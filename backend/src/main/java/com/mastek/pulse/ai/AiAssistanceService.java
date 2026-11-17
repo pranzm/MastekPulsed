@@ -21,20 +21,21 @@ import java.util.*;
  * File: AiAssistanceService.java
  * Journey: Supporting Journey C ("Use optional AI drafting or summarization,
  *          review the result, and explicitly choose the next action" -
- *          Proposal Pages 4, 5, 7, 8, 14).
+ *          Proposal Pages 4, 5, 7, 8, 14 + Campfire CF-010 / D2).
  * Why it is designed this way:
- *   Enforces the 5 strict AI & Trust rules from Proposal Pages 4 & 5:
- *   1. PERMISSION CHECK BEFORE AI: Verifies the caller has `audience_id` access
- *      to the source story/update BEFORE passing any text to the AI adapter.
- *      ("Send only permitted content to an optional AI adapter" - Page 5).
+ *   Enforces the 5 strict AI & Trust rules from Proposal Pages 4 & 5 + D2:
+ *   1. PUBLISHED VISIBILITY & AUDIENCE CHECK BEFORE AI: Verifies the caller has
+ *      published visibility (`requirePublishedVisibility`) to the source story/update
+ *      (or author ownership when polishing one's own draft) BEFORE passing any text
+ *      to the AI adapter. Unpublished or withdrawn stories are never summarized!
  *   2. SENSITIVE CONTENT / REFUSAL CHECK: Refuses requests that attempt to
- *      infer sensitive attributes, rank employees, or access private messages.
+ *      infer sensitive attributes, rank employees by performance/appraisal, or
+ *      access private messages.
  *   3. HARD BUDGET CAP (720 Actions): Alerts at 50% (360), 80% (576), and 100% (720);
  *      automatically disables optional AI at 100% cap and falls back to templates.
  *   4. NON-AI TEMPLATE FALLBACK: Always returns a clean, deterministic
- *      `templateFallback` alongside `aiSuggestion` ("Keep templates as a fallback").
- *   5. EXPLICIT HUMAN CHOICE: Never saves or sends the draft automatically;
- *      the user must review, edit, and explicitly click Send or Submit.
+ *      `templateFallback` alongside `aiSuggestion`.
+ *   5. EXPLICIT HUMAN CHOICE: Never saves or sends the draft automatically.
  * ============================================================================
  */
 @Service
@@ -105,13 +106,12 @@ public class AiAssistanceService {
         String contextId = (String) payload.get("contextId");
         String userDraftText = (String) payload.getOrDefault("userDraftText", "");
 
-        // 1. Refusal gate for prohibited prompts (employee ranking, appraisal, salary, private messages)
         String lowerDraft = userDraftText != null ? userDraftText.toLowerCase() : "";
         if (lowerDraft.contains("appraisal score") || lowerDraft.contains("rank employees")
                 || lowerDraft.contains("private message") || lowerDraft.contains("medical")
                 || lowerDraft.contains("salary")) {
             throw PulseException.unprocessable(
-                    "422: Refused by Mastek Pulse AI Trust Policy — cannot infer sensitive attributes, private messages, or employee appraisal scores."
+                    "422: Refused by Mastek Campfire AI Trust Policy — cannot infer sensitive attributes, private messages, or employee appraisal scores."
             );
         }
 
@@ -122,11 +122,18 @@ public class AiAssistanceService {
         if (contextId != null && !contextId.isBlank()) {
             item = contentItemRepository.findById(contextId)
                     .orElseThrow(() -> PulseException.notFound("404: Context item not found: " + contextId));
-            // 2. Enforce strict Audience Permission Check BEFORE AI Adapter!
-            identityService.requireAudienceAccess(caller, item.getAudienceId());
 
-            int ver = item.getPublishedVersion() != null ? item.getPublishedVersion() : item.getCurrentVersion();
-            rev = contentRevisionRepository.findByContentIdAndVersionNumber(item.getId(), ver)
+            int versionToRead;
+            if ("STORY_POLISH".equals(assistType) && item.getAuthorId().equals(caller.getId()) && !"WITHDRAWN".equals(item.getStatus())) {
+                identityService.requireAudienceAccess(caller, item.getAudienceId());
+                versionToRead = item.getCurrentVersion();
+            } else {
+                // D2 Invariant: Employee AI context strictly requires PUBLISHED status & publishedAudienceId!
+                identityService.requirePublishedVisibility(caller, item);
+                versionToRead = item.getPublishedVersion();
+            }
+
+            rev = contentRevisionRepository.findByContentIdAndVersionNumber(item.getId(), versionToRead)
                     .orElseThrow(() -> PulseException.notFound("404: Revision not found."));
             author = userRepository.findById(item.getAuthorId()).orElse(null);
         }
@@ -136,7 +143,6 @@ public class AiAssistanceService {
         String summary = rev != null ? rev.getSummary() : "";
         String sourceLink = rev != null && rev.getExternalUrl() != null ? rev.getExternalUrl() : "/stories/" + (contextId != null ? contextId : "");
 
-        // 3. Build deterministic Non-AI Template Fallback (Always available!)
         String templateFallback;
         String aiSuggestion;
 
@@ -152,7 +158,6 @@ public class AiAssistanceService {
                     + "\n• Grounded in official source (" + (rev != null && rev.getOfficialSource() != null ? rev.getOfficialSource() : "Internal Comms")
                     + ").\n• Source link: " + sourceLink;
         } else {
-            // STORY_POLISH
             templateFallback = "What changed:\n" + (userDraftText != null && !userDraftText.isBlank() ? userDraftText : "We tried one small change in our team workflow.")
                     + "\n\nWhat we learned:\nIt helped colleagues contribute more comfortably.";
             aiSuggestion = "Here is a structured draft preserving your meaning:\n\n"
@@ -160,7 +165,6 @@ public class AiAssistanceService {
                     + "\nPractical Outcome: Quieter colleagues had a clear opening to share ideas, and the team identified concrete improvements in under 15 minutes.";
         }
 
-        // 4. Check Hard Budget Cap (720 actions)
         long currentUsed = ledgerRepository.count();
         int cap = getEffectiveActionCap();
         boolean capReached = currentUsed >= cap;

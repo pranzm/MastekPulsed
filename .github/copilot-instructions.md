@@ -7,6 +7,8 @@ Always reference and obey the specifications in `docs/aidlc/`:
 - **Vision & Scope:** `docs/aidlc/01-inception-vision-and-scope.md` (Includes the 5 synthetic personas: `usr_asha`, `usr_daniel`, `usr_priya`, `usr_marcus`, `usr_elena`, and the exact POC vs. Deferred scope table).
 - **Domain Model & API Contracts:** `docs/aidlc/02-domain-model-and-contracts.md` (PostgreSQL 16 schema, editorial state machine, connection request state machine, 1-transaction locked Accept flow, and HTTP `401`/`403`/`409`/`422` rules).
 - **Architecture & Coding Guardrails:** `docs/aidlc/03-architecture-and-guardrails.md` (Java 21 + Spring Boot 3.3+ Modular Monolith in `backend/`, React 18 + TypeScript in `web/`, React Native + TypeScript in `mobile/`).
+- **Complete Code Flow & ASCII Diagrams:** `docs/aidlc/05-complete-code-flow-and-ascii-diagrams.md` (Master ASCII call graphs, Campfire challenge/recognition ledger flows, snapshot isolation, and 19-table ER diagram).
+- **MVP & Scalability Blueprint:** `docs/aidlc/06-mvp-and-scalability-plan.md` (8-week MVP sprint plan, 50 -> 10,000+ user scaling tiers, and plug-and-play feature extension ports).
 - **Task Backlog:** `docs/aidlc/04-task-backlog.md`.
 - **Learning Journal & ADRs:** `learn.md` (Do not confuse with `README.md`; record all architectural decisions and AI-DLC lessons in `learn.md`).
 

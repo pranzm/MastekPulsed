@@ -1,4 +1,4 @@
-# Mastek Pulse — AI-DLC Phase 2B: System Architecture, Scale (10,000+ Users), Code Flows & Microservices Evolution
+# Mastek Campfire — AI-DLC Phase 2B: System Architecture, Scale (10,000+ Users), Code Flows & Microservices Evolution
 
 > **🎓 Intern & AI Agent Guide:**
 > How do we design a Hackathon POC that doesn't need to be thrown away when Mastek scales it to **10,000+ employees**—and can cleanly split into **microservices** in the future if needed?
@@ -10,7 +10,7 @@
 
 ## 1. High-Level Architecture ("Three Clients. One Core.")
 
-Matches Page 5 and Page 14 of the Mastek Pulse Proposal:
+Matches Page 5 and Page 14 of the Mastek Campfire Proposal:
 
 ```text
 +====================================================================================================+
@@ -73,18 +73,27 @@ Matches Page 5 and Page 14 of the Mastek Pulse Proposal:
 
 ### Module-to-Table Ownership Matrix (Foundation for Modularity)
 
-Every table in [`V1__init_schema.sql`](../../backend/src/main/resources/db/migration/V1__init_schema.sql) has **one owning Java package**. Other modules may read via a service façade or projection, but **never** write to another module's tables directly:
+> **📌 Complete End-to-End ASCII Code Flows & 19-Table ER Diagram:** See [`05-complete-code-flow-and-ascii-diagrams.md`](05-complete-code-flow-and-ascii-diagrams.md) for the full project call graph, explicit `LIVE`/`DEMO` frontend transport flow, published snapshot isolation (`published_version` + `published_audience_id`), and Campfire challenge/recognition ledger flows.
+
+Every table in [`V1__init_schema.sql`](../../backend/src/main/resources/db/migration/V1__init_schema.sql) and [`V3__campfire_challenges_and_recognition.sql`](../../backend/src/main/resources/db/migration/V3__campfire_challenges_and_recognition.sql) has **one owning Java package**:
 
 ```text
 +--------------------+-------------------------------------+-----------------------------------------+
-| Java Package       | Owned PostgreSQL Tables (Read/Write)| Published Domain Events (via Outbox)    |
+| Java Package       | Owned PostgreSQL Tables (Read/Write)| Published Domain Events / Side Effects  |
 +--------------------+-------------------------------------+-----------------------------------------+
 | common/            | users, audiences, audience_members, | AUTH_PERSONA_SWITCHED,                  |
-|                    | audit_events                        | SECURITY_AUDIT_RECORDED                 |
+|                    | user_interests, audit_events        | SECURITY_AUDIT_RECORDED                 |
 +--------------------+-------------------------------------+-----------------------------------------+
 | content/           | content_items, content_revisions    | CONTENT_SUBMITTED, CONTENT_APPROVED,    |
 |                    |                                     | PUBLISH_DUE, CONTENT_PUBLISHED,         |
 |                    |                                     | CONTENT_WITHDRAWN                       |
++--------------------+-------------------------------------+-----------------------------------------+
+| challenge/         | challenges, challenge_entries       | CHALLENGE_ENTRY_SUBMITTED               |
+|                    |                                     | (Delegates draft/submit to content/)    |
++--------------------+-------------------------------------+-----------------------------------------+
+| recognition/       | appreciations, recognition_events,  | CONTRIBUTION_PUBLISHED (+20),           |
+|                    | recognition_preferences,            | REVERSAL_WITHDRAWN (-20),               |
+|                    | weekly_badges                       | APPRECIATION_GIVEN/RECEIVED (+5/+5)     |
 +--------------------+-------------------------------------+-----------------------------------------+
 | listen/            | playback_progress                   | (Reads published audio items via        |
 |                    |                                     |  content query façade)                  |
@@ -143,7 +152,7 @@ Every table in [`V1__init_schema.sql`](../../backend/src/main/resources/db/migra
 
 1. **Java 21 Virtual Threads (`spring.threads.virtual.enabled=true`):**
    - Traditional Java platform threads consume ~1 MB of OS stack RAM each, limiting a server to ~200–500 concurrent blocking requests.
-   - Java 21 Virtual Threads are lightweight user-mode fibers (~few hundred bytes) managed by the JVM. When 2,000 employees open Mastek Pulse at 9:00 AM and wait on PostgreSQL or an 8-second AI call, the virtual thread unmounts from the OS carrier thread automatically—allowing a single Spring Boot instance to handle thousands of concurrent requests effortlessly.
+   - Java 21 Virtual Threads are lightweight user-mode fibers (~few hundred bytes) managed by the JVM. When 2,000 employees open Mastek Campfire at 9:00 AM and wait on PostgreSQL or an 8-second AI call, the virtual thread unmounts from the OS carrier thread automatically—allowing a single Spring Boot instance to handle thousands of concurrent requests effortlessly.
 2. **Audio Offloading via Short-Lived Signed URLs:**
    - Streaming 12-minute MP3s for *Mastek Radio* and *Culture Cast* through the Java API would saturate JVM heap and network NICs.
    - Instead, `GET /api/v1/listen/radio` checks the employee's `audience_id` in PostgreSQL and returns a signed URL (`/media-stream/...` or S3/Blob pre-signed URL with a 15-minute expiry). The client streams audio directly from storage/CDN.
@@ -753,7 +762,7 @@ Matches the 4-Step "Accept Flow / One Transaction" mandate on Proposal Page 15:
     |     +----------------------------------------------------------------------------------+
     |     | Case "REQUEST_CREATED" | "REQUEST_ACCEPTED" | "CONTENT_PUBLISHED":               |
     |     |   Send generic notification (respecting user's notification_frequency):          |
-    |     |   "You have an update in Mastek Pulse" (never leaks private message text)        |
+    |     |   "You have an update in Mastek Campfire" (never leaks private message text)        |
     |     +----------------------------------------------------------------------------------+
     |
     |  3. Update Outbox Row Status:

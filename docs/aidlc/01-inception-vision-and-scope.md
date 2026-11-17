@@ -1,15 +1,15 @@
-# Mastek Pulse — AI-DLC Phase 1: Inception, Vision, and Scope
+# Mastek Campfire — AI-DLC Phase 1: Inception, Vision, and Scope
 
 > **🎓 Intern & AI Agent Guide:**
-> Welcome to **Mastek Pulse**! In an **AI-Driven Development Lifecycle (AI-DLC)**, this document is the **Inception Blueprint**. Before writing any Java, React, or React Native code, every human developer and AI coding agent (Claude Code, Codex, GitHub Copilot) must read this file to understand *what* we are building, *who* we are building it for, and *what is strictly in or out of scope*.
+> Welcome to **Mastek Campfire**! In an **AI-Driven Development Lifecycle (AI-DLC)**, this document is the **Inception Blueprint**. Before writing any Java, React, or React Native code, every human developer and AI coding agent (Claude Code, Codex, GitHub Copilot) must read this file to understand *what* we are building, *who* we are building it for, and *what is strictly in or out of scope*.
 
 ---
 
 ## 1. Executive Summary & Proposition
-**Mastek Pulse** ("Small stories. Meaningful connections.") is a connected employee experience across **Android, iOS, Employee Web, and a Role-Based Publishing Portal**, backed by a unified **Java 21 + Spring Boot 3 + PostgreSQL** core.
+**Mastek Campfire** ("Small stories. Meaningful connections.") is a connected employee experience across **Android, iOS, Employee Web, and a Role-Based Publishing Portal**, backed by a unified **Java 21 + Spring Boot 3 + PostgreSQL** core.
 
 ### The Problem We Are Solving (Hypothesis)
-Employees across geographies (e.g., India, UK, US) and functions (Delivery, Engineering, HR, Sales) often want to learn from or collaborate with colleagues beyond their immediate team, but they lack a **comfortable, specific opening** to reach out. Traditional enterprise channels (like Viva Engage) support broad communities, whereas Mastek Pulse tests a **narrower, consent-first, capacity-capped invitation workflow** paired with bite-sized updates and commute-friendly audio.
+Employees across geographies (e.g., India, UK, US) and functions (Delivery, Engineering, HR, Sales) often want to learn from or collaborate with colleagues beyond their immediate team, but they lack a **comfortable, specific opening** to reach out. Traditional enterprise channels (like Viva Engage) support broad communities, whereas Mastek Campfire tests a **narrower, consent-first, capacity-capped invitation workflow** paired with bite-sized updates and commute-friendly audio.
 
 ### The Six Connected Experiences
 1. **Mastek Radio (01 / Commute Listening):** A curated listening queue of approved company updates, stories, and innovation highlights with background playback and cross-device resume.
@@ -27,7 +27,7 @@ Employees across geographies (e.g., India, UK, US) and functions (Delivery, Engi
 ```mermaid
 sequenceDiagram
     actor Asha as Asha (Developer, India)
-    participant App as Mastek Pulse (Mobile/Web)
+    participant App as Mastek Campfire (Mobile/Web)
     participant API as Spring Boot Core API
     actor Daniel as Daniel (Delivery Host, UK)
 
@@ -78,8 +78,8 @@ sequenceDiagram
 | **Seeded Pilot Dataset:** 1 Radio queue, 3 Culture Cast episodes, 6 bite-sized updates, and 12 synthetic contributions | Extensive offline media downloads (keep drafts local; stream audio via signed URLs) |
 | **Rules-based recommendations** with factual explanations grounded in real fields (`"WHY THIS? Your interest: team learning"`) | Semantic/vector recommendations unless time permits (never invent a fake "compatibility score"!) |
 | **Invitations workflow:** capacity, expiry, pause, acceptance, decline, cancellation, and bilateral private feedback | Calendar integration and automatic meeting booking (users agree a time using existing workplace tools) |
-| **Revision-based editorial workflow:** `Draft > In review > Approved > Scheduled / Published > Withdrawn` | Advanced editorial analytics or employee popularity/appraisal rankings (strictly prohibited!) |
-| **One optional AI capability** (drafting/summarization) with a **deterministic non-AI template fallback** | Generated AI voice narration, automated translation, and unreviewed AI actions |
+| **Revision-based editorial workflow:** `Draft > In review > Approved > Scheduled / Published > Withdrawn` | Employee appraisal rankings and advanced editorial analytics. Optional weekly community recognition is now in scope; see Campfire stories. |
+| **One optional AI capability** (drafting/summarization) with a **deterministic non-AI template fallback** | Automated translation and unreviewed AI actions. Optional Saathi narration is now in scope with a text fallback; integration remains pending. |
 
 ---
 
@@ -104,3 +104,7 @@ Why do we track specific fields in our database? Because the 4-week pilot measur
 3. **Return Participation (Target: ≥ 40%):** Week-1 active users active again in Week 4.
 4. **Host Workload (Target: Median ≤ 45 mins/week):** Self-reported weekly time spent publishing, responding, and participating.
 5. **Trust & Usability (Target: Zero material incidents):** Zero unauthorized disclosures, no critical WCAG accessibility barriers, and AI spend strictly within the hard budget cap (720 AI actions illustrative cap, alerting at 50%, 80%, 100%).
+
+## 17 November 2026 scope amendment
+
+The user approved **Mastek Campfire**, optional weekly gamification and Community Champions, and **Saathi**. This supersedes earlier exclusions of all public rankings and generated narration for this bounded POC. Employee appraisal scoring remains excluded. See [Campfire stories](../campfire/IMPLEMENTATION-STORIES.md), [contracts](../campfire/NEW-CONTRACTS.md), and [demo guide](../campfire/DEMO-GUIDE.md). Browser recognition uses its own explicit synthetic store; Java integration remains pending.

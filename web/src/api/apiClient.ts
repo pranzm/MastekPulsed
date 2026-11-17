@@ -1,14 +1,22 @@
 import {
   AiAssistanceResponseDto,
   AiBudgetStatusDto,
+  AppMode,
+  AppreciationResultDto,
   AudioListenItemDto,
   AuditEventDto,
   BilateralOutcome,
+  ChallengeDto,
+  ChallengeEntryDto,
   ConnectionRequestDto,
   ContentCardDto,
   HappenedAnswer,
+  LeaderboardResponseDto,
+  LeaderboardRowDto,
   PilotMetricsDto,
   PortalQueueItemDto,
+  PulseHttpError,
+  RecognitionProgressDto,
   UserProfileDto,
 } from './contracts';
 
@@ -17,22 +25,133 @@ import {
  * INTERN & AI AGENT GUIDE — WHAT IS THIS FILE?
  * ============================================================================
  * File: web/src/api/apiClient.ts
- * Journey: Unified API Client + Dual-Mode Contract Engine for Mastek Pulse.
+ * Journey: Explicit Transport Layer (`VITE_APP_MODE=demo|live`) for Mastek Campfire
+ *          (Stories CF-002..CF-007, CF-010, CF-011 & Plan Step D1).
  * Why it is designed this way:
- *   1. By default, every method calls our Java 21 + Spring Boot 3.3+ REST API
- *      (`/api/v1/...`) passing `X-Pulse-User-Id` and `Idempotency-Key`.
- *   2. What if a frontend developer is working on a laptop where Java/Docker
- *      isn't running yet? This client automatically falls back to an exact,
- *      stateful in-memory mirror of `V2__seed_pilot_data.sql` and all Java
- *      business rules (Audience Filter Before Rank, 1-Transaction Capacity Lock,
- *      Bilateral Usefulness Confirmation, No Self-Approval, Edit Invalidates
- *      Approval, and the 720-Action AI Budget Gate)!
- *   3. Also synthesizes a real playable Web Audio WAV data URI so clicking
- *      "Play Mastek Radio" or "Play Culture Cast" plays real audio in the browser!
+ *   1. EXPLICIT MODE SELECTION (No Silent Fallback After Live Failure!):
+ *      - Configured via `VITE_APP_MODE=demo|live` (defaulting to `'demo'` for
+ *        static/offline builds) or explicit presenter toggle (`setAppModeOverride`).
+ *      - If `VITE_APP_MODE` is set to an unknown value, throws `500 INVALID_APP_MODE`.
+ *      - In `'live'` mode, ONLY real Spring Boot + PostgreSQL API responses establish
+ *        success. Any HTTP `401/403/404/409/422/500` or network failure throws a
+ *        typed `PulseHttpError(status, code, message)` and NEVER mutates local demo state!
+ *   2. CANONICAL SERVER PERSONA IDs (`usr_asha`, `usr_daniel`, `usr_priya`,
+ *      `usr_marcus`, `usr_elena`, `usr_rohan`):
+ *      - Both `live` and `demo` adapters use the exact same 6+ canonical server IDs
+ *        so five distinct colleagues can appreciate Asha's story to unlock
+ *        `Community Favourite` without mapping by display name.
  * ============================================================================
  */
 
 const STORAGE_KEY = 'mastek_pulse_state_v1';
+const MODE_OVERRIDE_KEY = 'mastek_campfire_mode_override';
+
+let runtimeModeOverride: AppMode | null = (() => {
+  try {
+    const saved = sessionStorage.getItem(MODE_OVERRIDE_KEY);
+    if (saved === 'demo' || saved === 'live') return saved;
+  } catch {
+    // ignore
+  }
+  return null;
+})();
+
+export function getAppMode(): AppMode {
+  if (runtimeModeOverride) {
+    return runtimeModeOverride;
+  }
+  const rawEnv = (import.meta as any).env?.VITE_APP_MODE;
+  if (!rawEnv || rawEnv === '') {
+    return 'demo';
+  }
+  if (rawEnv !== 'demo' && rawEnv !== 'live') {
+    throw new PulseHttpError(
+      500,
+      'INVALID_APP_MODE',
+      `Invalid VITE_APP_MODE="${rawEnv}". Expected "demo" or "live".`
+    );
+  }
+  return rawEnv;
+}
+
+export function setAppModeOverride(mode: AppMode | null): void {
+  runtimeModeOverride = mode;
+  try {
+    if (mode) sessionStorage.setItem(MODE_OVERRIDE_KEY, mode);
+    else sessionStorage.removeItem(MODE_OVERRIDE_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Performs an authoritative HTTP call to `/api/v1` in `live` mode.
+ * Never falls back to local simulation on error!
+ */
+async function liveRequest<T>(
+  path: string,
+  activeUserId: string,
+  init?: RequestInit
+): Promise<T> {
+  const headers: Record<string, string> = {
+    ...(init?.headers as Record<string, string>),
+  };
+  if (activeUserId) {
+    headers['X-Pulse-User-Id'] = activeUserId;
+  }
+  if (init?.body && !headers['Content-Type']) {
+    headers['Content-Type'] = 'application/json';
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(`/api/v1${path}`, {
+      ...init,
+      headers,
+    });
+  } catch (err: any) {
+    throw new PulseHttpError(
+      0,
+      'NETWORK_ERROR',
+      `Live API request to /api/v1${path} failed (${err?.message || 'network unreachable'}). No local fallback was executed.`
+    );
+  }
+
+  if (!res.ok) {
+    let code = `HTTP_${res.status}`;
+    let message = `HTTP ${res.status} ${res.statusText}`;
+    try {
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        const body = await res.json();
+        if (body && typeof body === 'object') {
+          code = body.code || code;
+          message = body.message || message;
+        }
+      } else {
+        const text = await res.text();
+        if (text && text.trim().length > 0 && text.length < 300) {
+          message = text.trim();
+        }
+      }
+    } catch {
+      // keep default status message
+    }
+    throw new PulseHttpError(res.status, code, message);
+  }
+
+  return (await res.json()) as T;
+}
+
+interface DemoAppreciationRecord {
+  id: string;
+  actorId: string;
+  contentId: string;
+  recipientId: string;
+  weekStart: string;
+  actorTeamSnapshot: string;
+  recipientTeamSnapshot: string;
+}
 
 interface LocalStoreState {
   users: UserProfileDto[];
@@ -46,6 +165,10 @@ interface LocalStoreState {
   aiActionsUsed: number;
   aiActionCap: number;
   auditLog: AuditEventDto[];
+  challengeEntriesByUser: Record<string, ChallengeEntryDto>;
+  challengeIdempotencyHashes: Record<string, { entryUserId: string; payloadHash: string }>;
+  appreciations: DemoAppreciationRecord[];
+  leaderboardOptOut: Record<string, boolean>;
 }
 
 function createPlayableWavDataUri(seconds = 6): string {
@@ -92,6 +215,7 @@ function createPlayableWavDataUri(seconds = 6): string {
 }
 
 const DEMO_WAV_URI = createPlayableWavDataUri(8);
+const DEMO_WEEK_START = '2026-11-16';
 
 function getInitialSeedState(): LocalStoreState {
   const users: UserProfileDto[] = [
@@ -149,10 +273,22 @@ function getInitialSeedState(): LocalStoreState {
       email: 'elena.rostova@mastek-pulse.demo',
       region: 'UK',
       functionName: 'Platform IT',
-      roles: ['EMPLOYEE', 'ADMIN'],
+      roles: ['EMPLOYEE', 'CREATOR', 'ADMIN'],
       interests: ['security', 'accessibility', 'cloud architecture'],
       audiences: ['aud_all', 'aud_pilot', 'aud_uk_restricted'],
       notificationFrequency: 'WEEKLY_SUMMARY',
+      hostPaused: false,
+    },
+    {
+      id: 'usr_rohan',
+      displayName: 'Rohan Deshmukh',
+      email: 'rohan.deshmukh@mastek-pulse.demo',
+      region: 'INDIA',
+      functionName: 'Cloud Practice',
+      roles: ['EMPLOYEE', 'CREATOR'],
+      interests: ['innovation', 'cloud architecture', 'team learning'],
+      audiences: ['aud_all', 'aud_pilot'],
+      notificationFrequency: 'DAILY_DIGEST',
       hostPaused: false,
     },
   ];
@@ -194,7 +330,7 @@ function getInitialSeedState(): LocalStoreState {
         acceptedCount: 0,
         remainingPlaces: 2,
         paused: false,
-        expiresAt: '2026-11-15T23:59:59Z',
+        expiresAt: '2026-11-25T23:59:59Z',
         statusLabel: 'OPEN',
       },
     },
@@ -209,7 +345,7 @@ function getInitialSeedState(): LocalStoreState {
       externalUrl: 'https://intranet.mastek.demo/updates/three-ideas',
       authorId: 'usr_marcus',
       authorName: 'Marcus Vance',
-      authorFunction: 'Internal Comms',
+      authorFunction: 'Operations',
       authorRegion: 'US',
       audienceId: 'aud_all',
       audienceName: 'All Employees',
@@ -258,81 +394,31 @@ function getInitialSeedState(): LocalStoreState {
         acceptedCount: 1,
         remainingPlaces: 1,
         paused: false,
-        expiresAt: '2026-11-15T23:59:59Z',
+        expiresAt: '2026-11-25T23:59:59Z',
         statusLabel: 'OPEN',
       },
     },
     {
-      id: 'story_03',
+      id: 'story_06',
       contentType: 'STORY',
-      title: 'Three screen-reader bugs we caught in 20 minutes',
-      summary: 'Testing our clinical intake flow with VoiceOver and TalkBack before sprint sign-off.',
+      title: 'Testing denied access in PostgreSQL row policies',
+      summary: 'Why database owners can accidentally bypass RLS—and how we test least-privilege roles in CI.',
       bodyText:
-        'Instead of waiting for an external audit, our developers ran a 20-minute keyboard-only and VoiceOver drill every Wednesday. Happy to walk any team through our 5-point accessibility checklist.',
-      authorId: 'usr_sophie',
-      authorName: 'Sophie Clarke',
-      authorFunction: 'Healthcare Delivery',
+        'PostgreSQL table owners and roles with BYPASSRLS ignore row security policies by default. We added automated integration tests that run as a non-privileged application role and assert 403 Forbidden on restricted audiences.',
+      authorId: 'usr_elena',
+      authorName: 'Elena Rostova',
+      authorFunction: 'Platform IT',
       authorRegion: 'UK',
       audienceId: 'aud_pilot',
       audienceName: 'Colleagues in the pilot',
-      tags: ['accessibility', 'delivery excellence', 'customer stories'],
+      tags: ['security', 'cloud architecture', 'delivery excellence'],
       status: 'PUBLISHED',
       currentVersion: 1,
       publishedVersion: 1,
-      publishedAt: '2026-10-24T11:00:00Z',
-      factualExplanation: 'WHY THIS? Shared with colleagues in the pilot · 15 min conversation / 2 places available',
+      publishedAt: '2026-10-23T11:00:00Z',
+      factualExplanation: 'WHY THIS? Shared with colleagues in the pilot',
       hasAudio: false,
-      invitation: {
-        id: 'inv_story_03',
-        hostId: 'usr_sophie',
-        hostName: 'Sophie Clarke',
-        hostRegion: 'UK',
-        hostFunction: 'Healthcare Delivery',
-        topicLabel: 'Ask me about this: 20-minute WCAG screen-reader checks',
-        durationMinutes: 15,
-        capacity: 2,
-        acceptedCount: 0,
-        remainingPlaces: 2,
-        paused: false,
-        expiresAt: '2026-11-15T23:59:59Z',
-        statusLabel: 'OPEN',
-      },
-    },
-    {
-      id: 'story_04',
-      contentType: 'STORY',
-      title: 'How we built a 30-case evaluation gate for internal AI helpers',
-      summary: 'Testing permission boundaries, refusal behavior, and faithfulness before enabling AI drafting.',
-      bodyText:
-        'Before turning on optional AI summarization, we created 30 synthetic test cases covering unauthorized audience leakage, hallucinated numbers, and template fallback behavior. Zero unauthorized disclosures is our non-negotiable release gate.',
-      authorId: 'usr_carlos',
-      authorName: 'Carlos Mendez',
-      authorFunction: 'Data & AI',
-      authorRegion: 'US',
-      audienceId: 'aud_pilot',
-      audienceName: 'Colleagues in the pilot',
-      tags: ['innovation', 'ai engineering', 'security'],
-      status: 'PUBLISHED',
-      currentVersion: 1,
-      publishedVersion: 1,
-      publishedAt: '2026-10-24T09:30:00Z',
-      factualExplanation: 'WHY THIS? Your interest: innovation · 15 min conversation / 2 places available',
-      hasAudio: false,
-      invitation: {
-        id: 'inv_story_04',
-        hostId: 'usr_carlos',
-        hostName: 'Carlos Mendez',
-        hostRegion: 'US',
-        hostFunction: 'Data & AI',
-        topicLabel: 'Ask me about this: 30-case AI evaluation harness',
-        durationMinutes: 15,
-        capacity: 2,
-        acceptedCount: 0,
-        remainingPlaces: 2,
-        paused: false,
-        expiresAt: '2026-11-15T23:59:59Z',
-        statusLabel: 'OPEN',
-      },
+      invitation: null,
     },
     {
       id: 'story_05',
@@ -366,53 +452,9 @@ function getInitialSeedState(): LocalStoreState {
         acceptedCount: 1,
         remainingPlaces: 2,
         paused: false,
-        expiresAt: '2026-11-15T23:59:59Z',
+        expiresAt: '2026-11-25T23:59:59Z',
         statusLabel: 'OPEN',
       },
-    },
-    {
-      id: 'story_06',
-      contentType: 'STORY',
-      title: 'Testing denied access in PostgreSQL row policies',
-      summary: 'Why database owners can accidentally bypass RLS—and how we test least-privilege roles in CI.',
-      bodyText:
-        'PostgreSQL table owners and roles with BYPASSRLS ignore row security policies by default. We added automated integration tests that run as a non-privileged application role and assert 403 Forbidden on restricted audiences.',
-      authorId: 'usr_elena',
-      authorName: 'Elena Rostova',
-      authorFunction: 'Platform IT',
-      authorRegion: 'UK',
-      audienceId: 'aud_pilot',
-      audienceName: 'Colleagues in the pilot',
-      tags: ['security', 'cloud architecture', 'delivery excellence'],
-      status: 'PUBLISHED',
-      currentVersion: 1,
-      publishedVersion: 1,
-      publishedAt: '2026-10-23T11:00:00Z',
-      factualExplanation: 'WHY THIS? Shared with colleagues in the pilot',
-      hasAudio: false,
-      invitation: null,
-    },
-    {
-      id: 'story_07',
-      contentType: 'STORY',
-      title: 'Keeping React, React Native, and Spring Boot in sync with OpenAPI',
-      summary: 'How a single OpenAPI contract stopped frontend-backend integration bugs during our sprint.',
-      bodyText:
-        'When three developers worked in different AI coding tools, agreeing on the OpenAPI schema and state machine upfront meant our mobile and web screens connected to the Java backend on the first try.',
-      authorId: 'usr_asha',
-      authorName: 'Asha Patel',
-      authorFunction: 'Engineering',
-      authorRegion: 'INDIA',
-      audienceId: 'aud_pilot',
-      audienceName: 'Colleagues in the pilot',
-      tags: ['team learning', 'innovation'],
-      status: 'PUBLISHED',
-      currentVersion: 1,
-      publishedVersion: 1,
-      publishedAt: '2026-10-22T10:00:00Z',
-      factualExplanation: 'WHY THIS? Your interest: team learning, innovation',
-      hasAudio: false,
-      invitation: null,
     },
     {
       id: 'story_08',
@@ -436,145 +478,13 @@ function getInitialSeedState(): LocalStoreState {
       hasAudio: false,
       invitation: null,
     },
-    {
-      id: 'story_09',
-      contentType: 'STORY',
-      title: 'Zero-downtime Flyway migrations for 10,000+ user tables',
-      summary: 'How to add columns and constraints without locking production traffic.',
-      bodyText:
-        'We split expand-and-contract migrations into separate releases so active readers never block. (Note: The invitation on this story is already at full capacity to demonstrate the disabled Full Capacity UI state!)',
-      authorId: 'usr_rohan',
-      authorName: 'Rohan Deshmukh',
-      authorFunction: 'Cloud Practice',
-      authorRegion: 'INDIA',
-      audienceId: 'aud_pilot',
-      audienceName: 'Colleagues in the pilot',
-      tags: ['cloud architecture', 'delivery excellence'],
-      status: 'PUBLISHED',
-      currentVersion: 1,
-      publishedVersion: 1,
-      publishedAt: '2026-10-21T16:00:00Z',
-      factualExplanation: 'WHY THIS? Invitation full (2 places filled)',
-      hasAudio: false,
-      invitation: {
-        id: 'inv_story_09',
-        hostId: 'usr_rohan',
-        hostName: 'Rohan Deshmukh',
-        hostRegion: 'INDIA',
-        hostFunction: 'Cloud Practice',
-        topicLabel: 'Ask me about this: zero-downtime Flyway migrations',
-        durationMinutes: 15,
-        capacity: 2,
-        acceptedCount: 2,
-        remainingPlaces: 0,
-        paused: false,
-        expiresAt: '2026-11-15T23:59:59Z',
-        statusLabel: 'FULL',
-      },
-    },
-    {
-      id: 'upd_02',
-      contentType: 'UPDATE',
-      title: 'Mastek Pulse 4-Week Pilot Kicks Off Across 3 Regions',
-      summary: '60 volunteers and 12 hosts across India, UK, and US are testing low-friction colleague connections.',
-      bodyText:
-        'Participation is completely optional. Over the next four weeks we are measuring whether specific, capacity-capped invitations help colleagues find willing expertise beyond their immediate team.',
-      officialSource: 'People & Culture Desk',
-      externalUrl: 'https://intranet.mastek.demo/updates/pulse-pilot',
-      authorId: 'usr_priya',
-      authorName: 'Priya Nair',
-      authorFunction: 'People & Culture',
-      authorRegion: 'INDIA',
-      audienceId: 'aud_all',
-      audienceName: 'All Employees',
-      tags: ['culture', 'team learning', 'inclusion'],
-      status: 'PUBLISHED',
-      currentVersion: 1,
-      publishedVersion: 1,
-      publishedAt: '2026-10-25T09:00:00Z',
-      factualExplanation: 'WHY THIS? Your interest: culture, team learning',
-      hasAudio: false,
-      invitation: null,
-    },
-    {
-      id: 'upd_03',
-      contentType: 'UPDATE',
-      title: 'WCAG 2.1 AA Accessibility Checklist for Web & Mobile Releases',
-      summary: 'Keyboard navigation, screen-reader labels, captions, and transcripts are now release gates for all internal apps.',
-      bodyText:
-        'Every audio clip on Mastek Pulse includes a readable transcript, and playback never starts automatically. Review the updated engineering verification guide.',
-      officialSource: 'Platform Engineering Standards',
-      externalUrl: 'https://intranet.mastek.demo/updates/wcag-checklist',
-      authorId: 'usr_elena',
-      authorName: 'Elena Rostova',
-      authorFunction: 'Platform IT',
-      authorRegion: 'UK',
-      audienceId: 'aud_all',
-      audienceName: 'All Employees',
-      tags: ['accessibility', 'security', 'delivery excellence'],
-      status: 'PUBLISHED',
-      currentVersion: 1,
-      publishedVersion: 1,
-      publishedAt: '2026-10-24T08:00:00Z',
-      factualExplanation: 'WHY THIS? Approved company update for your audience',
-      hasAudio: false,
-      invitation: null,
-    },
-    {
-      id: 'upd_04',
-      contentType: 'UPDATE',
-      title: 'Cloud Migration Playbook v2.4 Published',
-      summary: 'Updated database row-level security templates and zero-downtime PostgreSQL cutover checklists.',
-      bodyText:
-        'The Cloud Practice has published reusable Terraform and Flyway templates featuring least-privilege application roles and transactional outbox tables.',
-      officialSource: 'Global Cloud Practice',
-      externalUrl: 'https://intranet.mastek.demo/updates/cloud-playbook',
-      authorId: 'usr_rohan',
-      authorName: 'Rohan Deshmukh',
-      authorFunction: 'Cloud Practice',
-      authorRegion: 'INDIA',
-      audienceId: 'aud_all',
-      audienceName: 'All Employees',
-      tags: ['cloud architecture', 'innovation', 'security'],
-      status: 'PUBLISHED',
-      currentVersion: 1,
-      publishedVersion: 1,
-      publishedAt: '2026-10-23T08:00:00Z',
-      factualExplanation: 'WHY THIS? Your interest: innovation',
-      hasAudio: false,
-      invitation: null,
-    },
-    {
-      id: 'upd_05',
-      contentType: 'UPDATE',
-      title: 'Q4 Healthcare Delivery Highlights & Client Feedback',
-      summary: 'How cross-functional pairing reduced incident triage times by 28% across UK & India pods.',
-      bodyText:
-        'Read the brief on how structured handover notes between UK and India shifts improved release confidence.',
-      officialSource: 'UK & India Delivery Office',
-      externalUrl: 'https://intranet.mastek.demo/updates/q4-healthcare',
-      authorId: 'usr_sophie',
-      authorName: 'Sophie Clarke',
-      authorFunction: 'Healthcare Delivery',
-      authorRegion: 'UK',
-      audienceId: 'aud_all',
-      audienceName: 'All Employees',
-      tags: ['customer stories', 'delivery excellence'],
-      status: 'PUBLISHED',
-      currentVersion: 1,
-      publishedVersion: 1,
-      publishedAt: '2026-10-22T08:00:00Z',
-      factualExplanation: 'WHY THIS? Approved company update for your audience',
-      hasAudio: false,
-      invitation: null,
-    },
   ];
 
   const radioQueues: AudioListenItemDto[] = [
     {
       id: 'rad_commute_01',
       contentType: 'RADIO_QUEUE',
-      title: 'A little closer to Mastek.',
+      title: 'Your Commute Edition: A little closer to Mastek',
       summary: 'Company news + colleague stories · Curated queue / 12 min remaining',
       bodyText:
         'Curated 12-minute commute edition combining three approved highlights: (01) Company pulse (2 min), (02) Innovation spotlight (4 min), and (03) A story across borders (6 min).',
@@ -599,14 +509,14 @@ function getInitialSeedState(): LocalStoreState {
     {
       id: 'cc_ep_03',
       contentType: 'CULTURE_CAST',
-      title: 'Different places. Shared possibilities.',
+      title: 'Episode 03: Different places. Shared possibilities.',
       summary: 'A conversation about ideas and culture across geographies and functions · 8 min / Hosted by a colleague',
       bodyText:
         'Daniel Wright and Priya Nair discuss how quiet writing before open discussion helps distributed teams across India, the UK, and the US contribute on equal footing.',
       hostId: 'usr_daniel',
       hostName: 'Daniel Wright & Priya Nair',
       durationSeconds: 480,
-      resumePositionSeconds: 130, // Matches Wireframe 08 (02:10) & Web Bar (04:12)!
+      resumePositionSeconds: 130,
       transcriptText:
         '[00:00] Daniel: Welcome to Culture Cast Episode 04. Today we are looking at how different offices collaborate across time zones.\n[02:10] Priya: When we gave people five minutes to write notes silently before speaking, participation from quieter colleagues doubled.\n[05:30] Daniel: Continue the conversation through the related retrospective story or voluntary invitation right below this episode.',
       chaptersJson: JSON.stringify([
@@ -618,53 +528,8 @@ function getInitialSeedState(): LocalStoreState {
       signedAudioUrl: DEMO_WAV_URI,
       publishedVersion: 2,
     },
-    {
-      id: 'cc_ep_02',
-      contentType: 'CULTURE_CAST',
-      title: 'Episode 02: Designing Accessible Healthcare Portals',
-      summary: 'Lessons from UK and India delivery pods on building WCAG-first patient experiences · 10 min',
-      bodyText:
-        'Sophie Clarke hosts a conversation on why accessibility checks belong at wireframe stage rather than pre-release QA.',
-      hostId: 'usr_sophie',
-      hostName: 'Sophie Clarke',
-      durationSeconds: 600,
-      resumePositionSeconds: 0,
-      transcriptText:
-        '[00:00] Sophie: In Episode 2 of Culture Cast, we explore how our healthcare engineering pods bake screen-reader and keyboard navigation into every component.\n[03:10] Engineer: Testing with TalkBack and VoiceOver early saved us three weeks of rework.',
-      chaptersJson: JSON.stringify([
-        { index: 1, title: '01 Why WCAG matters early', startSeconds: 0 },
-        { index: 2, title: '02 Keyboard & screen-reader patterns', startSeconds: 190 },
-        { index: 3, title: '03 Sharing checklists across teams', startSeconds: 420 },
-      ]),
-      relatedStoryId: 'story_03',
-      signedAudioUrl: DEMO_WAV_URI,
-      publishedVersion: 1,
-    },
-    {
-      id: 'cc_ep_01',
-      contentType: 'CULTURE_CAST',
-      title: 'Episode 01: First 90 Days Across Continents',
-      summary: 'How new Mastek colleagues find mentors beyond their immediate project team · 9 min',
-      bodyText:
-        'Two engineers in Pune and Reading reflect on the small questions they hesitated to ask in their first month—and how structured 15-minute introductions changed their onboarding.',
-      hostId: 'usr_priya',
-      hostName: 'Priya Nair',
-      durationSeconds: 540,
-      resumePositionSeconds: 0,
-      transcriptText:
-        '[00:00] Priya: Welcome to Culture Cast Episode 1. Today we are talking about the first 90 days at Mastek.\n[02:30] Guest: The biggest unlock for me was realizing people in other regions are happy to share a 15-minute walkthrough if the topic is specific.',
-      chaptersJson: JSON.stringify([
-        { index: 1, title: '01 Introduction', startSeconds: 0 },
-        { index: 2, title: '02 The hesitation to reach out', startSeconds: 150 },
-        { index: 3, title: '03 Making asks specific', startSeconds: 340 },
-      ]),
-      relatedStoryId: 'story_05',
-      signedAudioUrl: DEMO_WAV_URI,
-      publishedVersion: 1,
-    },
   ];
 
-  // Matches Page 11 Wireframe ("Review queue": Culture Cast / Episode 04 In review, Innovation highlights Changes needed, This week on Radio Approved)
   const portalItems: PortalQueueItemDto[] = [
     {
       id: 'cc_ep_03',
@@ -691,54 +556,6 @@ function getInitialSeedState(): LocalStoreState {
       updatedAt: '2026-10-26T09:15:00Z',
     },
     {
-      id: 'upd_06',
-      revisionId: 'rev_upd_06',
-      contentType: 'UPDATE',
-      title: 'Innovation highlights',
-      summary: 'Company update · AI-Assisted Documentation Patterns',
-      bodyText:
-        'Summary of how teams use contract-first OpenAPI specs and markdown guardrails to align Claude Code, Codex, and GitHub Copilot.',
-      authorId: 'usr_carlos',
-      authorName: 'Carlos Mendez',
-      audienceId: 'aud_all',
-      audienceName: 'All employees',
-      status: 'DRAFT',
-      currentVersion: 1,
-      publishedVersion: null,
-      hasAudio: false,
-      transcriptChecked: true,
-      mediaReady: true,
-      approvedBy: null,
-      approvedByName: null,
-      reviewerNotes: 'Changes needed: Please include the link to the official CTO office template repository.',
-      scheduledFor: null,
-      updatedAt: '2026-10-26T08:40:00Z',
-    },
-    {
-      id: 'rad_commute_01',
-      revisionId: 'rev_rad_01',
-      contentType: 'RADIO_QUEUE',
-      title: 'This week on Radio',
-      summary: 'Curated queue · Your Commute Edition (12 min)',
-      bodyText:
-        'Curated 12-minute commute edition combining Company pulse, Innovation spotlight, and A story across borders.',
-      authorId: 'usr_marcus',
-      authorName: 'Marcus Vance',
-      audienceId: 'aud_all',
-      audienceName: 'All employees',
-      status: 'APPROVED',
-      currentVersion: 1,
-      publishedVersion: 1,
-      hasAudio: true,
-      transcriptChecked: true,
-      mediaReady: true,
-      approvedBy: 'usr_priya',
-      approvedByName: 'Priya Nair',
-      reviewerNotes: 'Transcript checked and audio normalized.',
-      scheduledFor: null,
-      updatedAt: '2026-10-26T07:30:00Z',
-    },
-    {
       id: 'story_10',
       revisionId: 'rev_story_10',
       contentType: 'STORY',
@@ -746,8 +563,8 @@ function getInitialSeedState(): LocalStoreState {
       summary: 'Colleague Story · Approved by Priya Nair, ready for Publisher release.',
       bodyText:
         'A simple 4-bullet markdown template at the end of the UK afternoon reduced morning blocker messages for the Pune engineering team.',
-      authorId: 'usr_sophie',
-      authorName: 'Sophie Clarke',
+      authorId: 'usr_rohan',
+      authorName: 'Rohan Deshmukh',
       audienceId: 'aud_pilot',
       audienceName: 'Colleagues in the pilot',
       status: 'APPROVED',
@@ -761,54 +578,6 @@ function getInitialSeedState(): LocalStoreState {
       reviewerNotes: 'Approved for pilot release.',
       scheduledFor: null,
       updatedAt: '2026-10-26T07:00:00Z',
-    },
-    {
-      id: 'story_11',
-      revisionId: 'rev_story_11',
-      contentType: 'STORY',
-      title: 'Prompt engineering guardrails for multi-agent teams',
-      summary: 'Colleague Story · Submitted by Carlos Mendez for review.',
-      bodyText:
-        'How our team uses CLAUDE.md, AGENTS.md, and .github/copilot-instructions.md pointing to a shared docs/aidlc/ specification hub.',
-      authorId: 'usr_carlos',
-      authorName: 'Carlos Mendez',
-      audienceId: 'aud_pilot',
-      audienceName: 'Colleagues in the pilot',
-      status: 'IN_REVIEW',
-      currentVersion: 1,
-      publishedVersion: null,
-      hasAudio: false,
-      transcriptChecked: true,
-      mediaReady: true,
-      approvedBy: null,
-      approvedByName: null,
-      reviewerNotes: null,
-      scheduledFor: null,
-      updatedAt: '2026-10-26T06:45:00Z',
-    },
-    {
-      id: 'story_12',
-      revisionId: 'rev_story_12',
-      contentType: 'STORY',
-      title: 'A better retrospective',
-      summary: 'Draft saved by Asha Patel — ready to edit and submit for review (Wireframe 05 - Page 8).',
-      bodyText:
-        'What changed? After chatting with Daniel, we tried five minutes of silent note-taking at the start of our sprint retro in Pune. What did we learn? Three junior developers shared test automation ideas that saved us two hours every release.',
-      authorId: 'usr_asha',
-      authorName: 'Asha Patel',
-      audienceId: 'aud_pilot',
-      audienceName: 'Colleagues in the pilot',
-      status: 'DRAFT',
-      currentVersion: 1,
-      publishedVersion: null,
-      hasAudio: false,
-      transcriptChecked: true,
-      mediaReady: true,
-      approvedBy: null,
-      approvedByName: null,
-      reviewerNotes: null,
-      scheduledFor: null,
-      updatedAt: '2026-10-26T06:15:00Z',
     },
   ];
 
@@ -848,6 +617,45 @@ function getInitialSeedState(): LocalStoreState {
     },
   };
 
+  const challengeEntriesByUser: Record<string, ChallengeEntryDto> = {
+    usr_daniel: {
+      entryId: 'che_seed_daniel',
+      challengeId: 'ch_beyond_01',
+      contentId: 'story_01',
+      revisionNumber: 1,
+      status: 'PUBLISHED',
+      title: 'A retrospective everyone can contribute to',
+      summary: 'One small change helped quieter voices join our team retrospective.',
+      bodyText: 'We asked everyone to write first, then share.',
+      audienceId: 'aud_pilot',
+      pointsAwarded: 20,
+    },
+    usr_elena: {
+      entryId: 'che_seed_elena',
+      challengeId: 'ch_beyond_01',
+      contentId: 'story_06',
+      revisionNumber: 1,
+      status: 'PUBLISHED',
+      title: 'Testing denied access in PostgreSQL row policies',
+      summary: 'Why database owners can accidentally bypass RLS.',
+      bodyText: 'We added automated integration tests that run as a non-privileged application role.',
+      audienceId: 'aud_pilot',
+      pointsAwarded: 20,
+    },
+    usr_rohan: {
+      entryId: 'che_seed_rohan',
+      challengeId: 'ch_beyond_01',
+      contentId: 'story_02',
+      revisionNumber: 1,
+      status: 'PUBLISHED',
+      title: 'Cutting API tail latency with Java 21 Virtual Threads',
+      summary: 'What we learned migrating a connection-heavy Spring Boot service.',
+      bodyText: 'Enabling Java 21 virtual threads alongside PostgreSQL row locks dropped tail latency.',
+      audienceId: 'aud_pilot',
+      pointsAwarded: 20,
+    },
+  };
+
   const auditLog: AuditEventDto[] = [
     {
       id: 'aud_ev_01',
@@ -857,24 +665,6 @@ function getInitialSeedState(): LocalStoreState {
       targetId: 'rev_story_01',
       details: 'Reviewer Priya Nair approved Revision 1 of story_01 (Author: Daniel Wright). Audience: Colleagues in the pilot.',
       createdAt: '2026-10-26T08:30:00Z',
-    },
-    {
-      id: 'aud_ev_02',
-      actorId: 'usr_marcus',
-      actionType: 'CONTENT_PUBLISHED',
-      targetType: 'CONTENT_ITEM',
-      targetId: 'story_01',
-      details: 'Publisher Marcus Vance released Revision 1 of story_01 to Colleagues in the pilot.',
-      createdAt: '2026-10-26T09:00:00Z',
-    },
-    {
-      id: 'aud_ev_03',
-      actorId: 'usr_priya',
-      actionType: 'REVISION_APPROVED',
-      targetType: 'CONTENT_REVISION',
-      targetId: 'rev_story_10',
-      details: 'Reviewer Priya Nair approved Revision 1 of story_10 (Author: Sophie Clarke). Ready for Publisher release.',
-      createdAt: '2026-10-26T09:10:00Z',
     },
   ];
 
@@ -890,6 +680,10 @@ function getInitialSeedState(): LocalStoreState {
     aiActionsUsed: 18,
     aiActionCap: 720,
     auditLog,
+    challengeEntriesByUser,
+    challengeIdempotencyHashes: {},
+    appreciations: [],
+    leaderboardOptOut: {},
   };
 }
 
@@ -897,10 +691,13 @@ function loadStore(): LocalStoreState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
-      return JSON.parse(raw) as LocalStoreState;
+      const parsed = JSON.parse(raw) as LocalStoreState;
+      if (parsed.challengeEntriesByUser && parsed.appreciations) {
+        return parsed;
+      }
     }
   } catch {
-    // ignore storage errors
+    // ignore
   }
   const initial = getInitialSeedState();
   saveStore(initial);
@@ -911,7 +708,7 @@ function saveStore(state: LocalStoreState) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   } catch {
-    // ignore storage errors
+    // ignore
   }
 }
 
@@ -938,41 +735,85 @@ function computeBilateralOutcome(
   return 'NOT_USEFUL';
 }
 
+function computeDemoRecognitionProgress(store: LocalStoreState, userId: string): RecognitionProgressDto {
+  const user = store.users.find((u) => u.id === userId) || store.users[0];
+  const publishedStoryIds = new Set(
+    store.storiesAndUpdates
+      .filter((s) => s.status === 'PUBLISHED' && s.contentType === 'STORY' && s.audienceId === 'aud_pilot')
+      .map((s) => s.id)
+  );
+
+  const entry = store.challengeEntriesByUser[userId];
+  const hasPublishedChallengeStory =
+    (entry && entry.status === 'PUBLISHED' && publishedStoryIds.has(entry.contentId)) ||
+    store.storiesAndUpdates.some(
+      (s) => s.authorId === userId && s.status === 'PUBLISHED' && s.contentType === 'STORY' && publishedStoryIds.has(s.id)
+    );
+  const contributionPoints = hasPublishedChallengeStory ? 20 : 0;
+
+  const given = store.appreciations.filter(
+    (a) => a.actorId === userId && publishedStoryIds.has(a.contentId)
+  );
+  const givingPoints = Math.min(3, given.length) * 5;
+  const distinctTeamsSupported = new Set(given.map((a) => a.recipientTeamSnapshot)).size;
+
+  const received = store.appreciations.filter(
+    (a) => a.recipientId === userId && publishedStoryIds.has(a.contentId)
+  );
+  const receivedDistinctCount = new Set(received.map((a) => a.actorId)).size;
+  const receivingPoints = Math.min(5, receivedDistinctCount) * 5;
+
+  const badges: string[] = [];
+  if (contributionPoints >= 20) badges.push('First Spark');
+  if (distinctTeamsSupported >= 3) badges.push('Connection Maker');
+  if (receivedDistinctCount >= 5) badges.push('Community Favourite');
+
+  return {
+    userId: user.id,
+    displayName: user.displayName,
+    weekStart: DEMO_WEEK_START,
+    timezone: 'UTC',
+    points: Math.min(60, contributionPoints + givingPoints + receivingPoints),
+    contributionPoints,
+    givenCount: given.length,
+    givingPoints,
+    receivedDistinctCount,
+    receivingPoints,
+    distinctTeamsSupported,
+    badges,
+    showOnLeaderboard: !store.leaderboardOptOut[user.id],
+  };
+}
+
 export const pulseApi = {
   async getPersonas(activeUserId: string): Promise<UserProfileDto[]> {
-    try {
-      const res = await fetch('/api/v1/personas', { headers: { 'X-Pulse-User-Id': activeUserId } });
-      if (res.ok) return await res.json();
-    } catch {
-      // Fallback to in-browser contract engine
+    if (getAppMode() === 'live') {
+      return liveRequest<UserProfileDto[]>('/personas', activeUserId);
     }
     return loadStore().users;
   },
 
   async getCurrentUser(activeUserId: string): Promise<UserProfileDto> {
-    try {
-      const res = await fetch('/api/v1/me', { headers: { 'X-Pulse-User-Id': activeUserId } });
-      if (res.ok) return await res.json();
-    } catch {
-      // Fallback
+    if (getAppMode() === 'live') {
+      return liveRequest<UserProfileDto>('/me', activeUserId);
     }
     const store = loadStore();
-    return store.users.find((u) => u.id === activeUserId) || store.users[0];
+    const found = store.users.find((u) => u.id === activeUserId);
+    if (!found) {
+      throw new PulseHttpError(401, 'UNAUTHORIZED', `401: Unknown employee identity: ${activeUserId}`);
+    }
+    return found;
   },
 
   async updatePreferences(
     activeUserId: string,
     prefs: { interests?: string[]; notificationFrequency?: string; hostPaused?: boolean }
   ): Promise<UserProfileDto> {
-    try {
-      const res = await fetch('/api/v1/me/preferences', {
+    if (getAppMode() === 'live') {
+      return liveRequest<UserProfileDto>('/me/preferences', activeUserId, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', 'X-Pulse-User-Id': activeUserId },
         body: JSON.stringify(prefs),
       });
-      if (res.ok) return await res.json();
-    } catch {
-      // Fallback
     }
     const store = loadStore();
     const user = store.users.find((u) => u.id === activeUserId) || store.users[0];
@@ -984,21 +825,15 @@ export const pulseApi = {
   },
 
   async getFeed(activeUserId: string, category = 'FOR_YOU', query = ''): Promise<ContentCardDto[]> {
-    try {
+    if (getAppMode() === 'live') {
       const params = new URLSearchParams();
       if (category) params.set('category', category);
       if (query) params.set('q', query);
-      const res = await fetch(`/api/v1/feed?${params.toString()}`, {
-        headers: { 'X-Pulse-User-Id': activeUserId },
-      });
-      if (res.ok) return await res.json();
-    } catch {
-      // Fallback
+      return liveRequest<ContentCardDto[]>(`/feed?${params.toString()}`, activeUserId);
     }
     const store = loadStore();
     const caller = store.users.find((u) => u.id === activeUserId) || store.users[0];
 
-    // STEP 1: Filter by caller's permitted audience_id BEFORE ranking!
     let items = store.storiesAndUpdates.filter(
       (item) => item.status === 'PUBLISHED' && caller.audiences.includes(item.audienceId)
     );
@@ -1025,7 +860,6 @@ export const pulseApi = {
       );
     }
 
-    // STEP 2 & 3: Rank by explicit interests + open host capacity and attach factual explanation
     return items
       .map((item) => {
         const matched = item.tags.filter((t) =>
@@ -1066,22 +900,278 @@ export const pulseApi = {
       .map((x) => x.card);
   },
 
+  async getCurrentChallenge(activeUserId: string): Promise<ChallengeDto> {
+    if (getAppMode() === 'live') {
+      return liveRequest<ChallengeDto>('/challenges/current', activeUserId);
+    }
+    const store = loadStore();
+    return {
+      id: 'ch_beyond_01',
+      title: 'Beyond My Job Title',
+      prompt: 'Share a hobby, a lesson, or someone who helped you beyond your immediate role. Participation is voluntary.',
+      startsAt: '2026-11-16T00:00:00Z',
+      endsAt: '2026-11-23T00:00:00Z',
+      timezone: 'UTC',
+      weekStart: DEMO_WEEK_START,
+      audienceId: 'aud_pilot',
+      audienceName: 'Colleagues in the Pilot',
+      status: 'ACTIVE',
+      myEntry: store.challengeEntriesByUser[activeUserId] || null,
+    };
+  },
+
+  async submitChallengeEntry(
+    activeUserId: string,
+    challengeId: string,
+    idempotencyKey: string,
+    payload: { title: string; bodyText: string; submitForReview?: boolean }
+  ): Promise<ChallengeEntryDto> {
+    if (getAppMode() === 'live') {
+      return liveRequest<ChallengeEntryDto>(`/challenges/${challengeId}/entries`, activeUserId, {
+        method: 'POST',
+        headers: { 'Idempotency-Key': idempotencyKey },
+        body: JSON.stringify(payload),
+      });
+    }
+
+    const store = loadStore();
+    const caller = store.users.find((u) => u.id === activeUserId);
+    if (!caller || !caller.roles.includes('CREATOR')) {
+      throw new PulseHttpError(403, 'FORBIDDEN_ACCESS', '403: Requires CREATOR role to submit a challenge entry.');
+    }
+    const title = (payload.title || '').trim();
+    const bodyText = (payload.bodyText || '').trim();
+    if (title.length < 5 || title.length > 100) {
+      throw new PulseHttpError(422, 'VALIDATION_FAILED', '422: Title must be between 5 and 100 characters.');
+    }
+    if (bodyText.length < 30 || bodyText.length > 1200) {
+      throw new PulseHttpError(422, 'VALIDATION_FAILED', '422: Story body must be between 30 and 1,200 characters.');
+    }
+
+    const scopedKey = `${activeUserId}:${idempotencyKey}`;
+    const payloadHash = `${title}|${bodyText}|${payload.submitForReview ?? true}`;
+    const prevIdem = store.challengeIdempotencyHashes[scopedKey];
+    if (prevIdem) {
+      if (prevIdem.payloadHash !== payloadHash) {
+        throw new PulseHttpError(
+          409,
+          'IDEMPOTENCY_CONFLICT',
+          '409: Idempotency-Key was already used with a different submission payload.'
+        );
+      }
+      return store.challengeEntriesByUser[activeUserId];
+    }
+
+    const existing = store.challengeEntriesByUser[activeUserId];
+    if (existing && existing.status !== 'DRAFT') {
+      throw new PulseHttpError(
+        409,
+        'DUPLICATE_ENTRY',
+        `409: One challenge story per person each week (current status: ${existing.status}).`
+      );
+    }
+
+    const nextRevision = existing ? existing.revisionNumber + 1 : 1;
+    const contentId = existing ? existing.contentId : `story_ch_${activeUserId}`;
+    const summary = bodyText.length > 130 ? bodyText.slice(0, 130) + '...' : bodyText;
+    const status = payload.submitForReview === false ? 'DRAFT' : 'IN_REVIEW';
+
+    const entry: ChallengeEntryDto = {
+      entryId: existing ? existing.entryId : `che_${activeUserId}`,
+      challengeId,
+      contentId,
+      revisionNumber: nextRevision,
+      status,
+      title,
+      summary,
+      bodyText,
+      audienceId: 'aud_pilot',
+      reviewerNotes: null,
+      pointsAwarded: 0,
+    };
+
+    store.challengeEntriesByUser[activeUserId] = entry;
+    store.challengeIdempotencyHashes[scopedKey] = { entryUserId: activeUserId, payloadHash };
+
+    const portalItem: PortalQueueItemDto = {
+      id: contentId,
+      revisionId: `rev_${contentId}_v${nextRevision}`,
+      contentType: 'STORY',
+      title,
+      summary,
+      bodyText,
+      authorId: caller.id,
+      authorName: caller.displayName,
+      audienceId: 'aud_pilot',
+      audienceName: 'Colleagues in the pilot',
+      status,
+      currentVersion: nextRevision,
+      publishedVersion: null,
+      hasAudio: false,
+      transcriptChecked: true,
+      mediaReady: true,
+      approvedBy: null,
+      approvedByName: null,
+      reviewerNotes: null,
+      scheduledFor: null,
+      updatedAt: new Date().toISOString(),
+    };
+
+    const pIdx = store.portalItems.findIndex((p) => p.id === contentId);
+    if (pIdx >= 0) store.portalItems[pIdx] = portalItem;
+    else store.portalItems.unshift(portalItem);
+
+    saveStore(store);
+    return entry;
+  },
+
+  async appreciateStory(activeUserId: string, contentId: string): Promise<AppreciationResultDto> {
+    if (getAppMode() === 'live') {
+      return liveRequest<AppreciationResultDto>(`/content/${contentId}/appreciations`, activeUserId, {
+        method: 'POST',
+      });
+    }
+
+    const store = loadStore();
+    const caller = store.users.find((u) => u.id === activeUserId);
+    if (!caller) throw new PulseHttpError(401, 'UNAUTHORIZED', '401: Unknown employee identity.');
+
+    const story = store.storiesAndUpdates.find((s) => s.id === contentId && s.status === 'PUBLISHED');
+    if (!story) {
+      throw new PulseHttpError(404, 'RESOURCE_NOT_FOUND', '404: Only published stories can receive appreciation.');
+    }
+    if (!caller.audiences.includes(story.audienceId)) {
+      throw new PulseHttpError(403, 'FORBIDDEN_ACCESS', '403: Access denied to restricted story audience.');
+    }
+    if (story.authorId === caller.id) {
+      throw new PulseHttpError(422, 'VALIDATION_FAILED', '422: Self-appreciation is disallowed.');
+    }
+
+    const existing = store.appreciations.find((a) => a.actorId === caller.id && a.contentId === contentId);
+    if (existing) {
+      return {
+        appreciationId: existing.id,
+        contentId,
+        actorId: caller.id,
+        recipientId: story.authorId,
+        weekStart: DEMO_WEEK_START,
+        alreadyAppreciated: true,
+        giverPointsDelta: 0,
+        receiverPointsDelta: 0,
+        actorProgress: computeDemoRecognitionProgress(store, caller.id),
+      };
+    }
+
+    const beforeGiver = computeDemoRecognitionProgress(store, caller.id);
+    const beforeReceiver = computeDemoRecognitionProgress(store, story.authorId);
+
+    const newApp: DemoAppreciationRecord = {
+      id: 'app_' + Math.random().toString(36).slice(2, 8),
+      actorId: caller.id,
+      contentId,
+      recipientId: story.authorId,
+      weekStart: DEMO_WEEK_START,
+      actorTeamSnapshot: caller.functionName,
+      recipientTeamSnapshot: story.authorFunction,
+    };
+    store.appreciations.push(newApp);
+    saveStore(store);
+
+    const afterGiver = computeDemoRecognitionProgress(store, caller.id);
+    const afterReceiver = computeDemoRecognitionProgress(store, story.authorId);
+
+    return {
+      appreciationId: newApp.id,
+      contentId,
+      actorId: caller.id,
+      recipientId: story.authorId,
+      weekStart: DEMO_WEEK_START,
+      alreadyAppreciated: false,
+      giverPointsDelta: afterGiver.givingPoints - beforeGiver.givingPoints,
+      receiverPointsDelta: afterReceiver.receivingPoints - beforeReceiver.receivingPoints,
+      actorProgress: afterGiver,
+    };
+  },
+
+  async getMyRecognitionProgress(activeUserId: string, week?: string): Promise<RecognitionProgressDto> {
+    if (getAppMode() === 'live') {
+      const qs = week ? `?week=${encodeURIComponent(week)}` : '';
+      return liveRequest<RecognitionProgressDto>(`/recognition/me${qs}`, activeUserId);
+    }
+    return computeDemoRecognitionProgress(loadStore(), activeUserId);
+  },
+
+  async getLeaderboard(activeUserId: string, audienceId = 'aud_pilot', week?: string): Promise<LeaderboardResponseDto> {
+    if (getAppMode() === 'live') {
+      const params = new URLSearchParams({ audienceId });
+      if (week) params.set('week', week);
+      return liveRequest<LeaderboardResponseDto>(`/recognition/leaderboard?${params.toString()}`, activeUserId);
+    }
+    const store = loadStore();
+    const caller = store.users.find((u) => u.id === activeUserId);
+    if (!caller || !caller.audiences.includes(audienceId)) {
+      throw new PulseHttpError(403, 'FORBIDDEN_ACCESS', `403: Access denied to audience ${audienceId}`);
+    }
+
+    const candidates = store.users
+      .filter((u) => u.audiences.includes(audienceId) && !store.leaderboardOptOut[u.id])
+      .map((u) => {
+        const prog = computeDemoRecognitionProgress(store, u.id);
+        return { user: u, points: prog.points, badges: prog.badges };
+      })
+      .sort((a, b) => b.points - a.points || a.user.displayName.localeCompare(b.user.displayName));
+
+    const entries: LeaderboardRowDto[] = [];
+    let currentRank = 1;
+    for (let i = 0; i < Math.min(5, candidates.length); i++) {
+      if (i > 0 && candidates[i].points < candidates[i - 1].points) {
+        currentRank = i + 1;
+      }
+      entries.push({
+        rank: currentRank,
+        userId: candidates[i].user.id,
+        displayName: candidates[i].user.displayName,
+        functionName: candidates[i].user.functionName,
+        region: candidates[i].user.region,
+        points: candidates[i].points,
+        badges: candidates[i].badges,
+      });
+    }
+
+    return {
+      weekStart: week || DEMO_WEEK_START,
+      timezone: 'UTC',
+      audienceId,
+      entries,
+    };
+  },
+
+  async updateRecognitionPreferences(
+    activeUserId: string,
+    showOnLeaderboard: boolean
+  ): Promise<RecognitionProgressDto> {
+    if (getAppMode() === 'live') {
+      return liveRequest<RecognitionProgressDto>('/recognition/preferences', activeUserId, {
+        method: 'PUT',
+        body: JSON.stringify({ showOnLeaderboard }),
+      });
+    }
+    const store = loadStore();
+    store.leaderboardOptOut[activeUserId] = !showOnLeaderboard;
+    saveStore(store);
+    return computeDemoRecognitionProgress(store, activeUserId);
+  },
+
   async getRadioQueues(activeUserId: string): Promise<AudioListenItemDto[]> {
-    try {
-      const res = await fetch('/api/v1/listen/radio', { headers: { 'X-Pulse-User-Id': activeUserId } });
-      if (res.ok) return await res.json();
-    } catch {
-      // Fallback
+    if (getAppMode() === 'live') {
+      return liveRequest<AudioListenItemDto[]>('/listen/radio', activeUserId);
     }
     return loadStore().radioQueues;
   },
 
   async getCultureCasts(activeUserId: string): Promise<AudioListenItemDto[]> {
-    try {
-      const res = await fetch('/api/v1/listen/culture-cast', { headers: { 'X-Pulse-User-Id': activeUserId } });
-      if (res.ok) return await res.json();
-    } catch {
-      // Fallback
+    if (getAppMode() === 'live') {
+      return liveRequest<AudioListenItemDto[]>('/listen/culture-cast', activeUserId);
     }
     return loadStore().cultureCasts;
   },
@@ -1092,15 +1182,12 @@ export const pulseApi = {
     positionSeconds: number,
     durationSeconds: number
   ): Promise<void> {
-    try {
-      const res = await fetch('/api/v1/listen/progress', {
+    if (getAppMode() === 'live') {
+      await liveRequest<unknown>('/listen/progress', activeUserId, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json', 'X-Pulse-User-Id': activeUserId },
         body: JSON.stringify({ contentId, positionSeconds, durationSeconds }),
       });
-      if (res.ok) return;
-    } catch {
-      // Fallback
+      return;
     }
     const store = loadStore();
     const r = store.radioQueues.find((x) => x.id === contentId);
@@ -1111,11 +1198,8 @@ export const pulseApi = {
   },
 
   async listRequests(activeUserId: string): Promise<ConnectionRequestDto[]> {
-    try {
-      const res = await fetch('/api/v1/requests', { headers: { 'X-Pulse-User-Id': activeUserId } });
-      if (res.ok) return await res.json();
-    } catch {
-      // Fallback
+    if (getAppMode() === 'live') {
+      return liveRequest<ConnectionRequestDto[]>('/requests', activeUserId);
     }
     const store = loadStore();
     return store.requests
@@ -1136,23 +1220,12 @@ export const pulseApi = {
     idempotencyKey: string,
     payload: { invitationId: string; messageText: string; aiAssisted: boolean }
   ): Promise<ConnectionRequestDto> {
-    try {
-      const res = await fetch('/api/v1/requests', {
+    if (getAppMode() === 'live') {
+      return liveRequest<ConnectionRequestDto>('/requests', activeUserId, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Pulse-User-Id': activeUserId,
-          'Idempotency-Key': idempotencyKey,
-        },
+        headers: { 'Idempotency-Key': idempotencyKey },
         body: JSON.stringify(payload),
       });
-      if (res.ok) return await res.json();
-      if (res.status >= 400 && res.status < 500) {
-        const err = await res.json();
-        throw new Error(err.message || 'Request failed');
-      }
-    } catch (e) {
-      if (e instanceof Error && e.message.startsWith('4')) throw e;
     }
 
     const store = loadStore();
@@ -1165,20 +1238,20 @@ export const pulseApi = {
     const caller = store.users.find((u) => u.id === activeUserId) || store.users[0];
     const story = store.storiesAndUpdates.find((s) => s.invitation?.id === payload.invitationId);
     if (!story || !story.invitation) {
-      throw new Error('404: Invitation not found.');
+      throw new PulseHttpError(404, 'RESOURCE_NOT_FOUND', '404: Invitation not found.');
     }
     const inv = story.invitation;
     if (inv.hostId === caller.id) {
-      throw new Error('422: Hosts cannot send an invitation request to themselves.');
+      throw new PulseHttpError(422, 'VALIDATION_FAILED', '422: Hosts cannot send an invitation request to themselves.');
     }
     if (inv.acceptedCount >= inv.capacity || inv.statusLabel !== 'OPEN') {
-      throw new Error('409: Invitation is already at full capacity or paused.');
+      throw new PulseHttpError(409, 'CAPACITY_FULL', '409: Invitation is already at full capacity or paused.');
     }
     const duplicate = store.requests.find(
       (r) => r.invitationId === inv.id && r.requesterId === caller.id && r.state !== 'CANCELLED'
     );
     if (duplicate) {
-      throw new Error('409: You already have an active request for this invitation.');
+      throw new PulseHttpError(409, 'CAPACITY_FULL', '409: You already have an active request for this invitation.');
     }
 
     const newReq: ConnectionRequestDto = {
@@ -1220,27 +1293,22 @@ export const pulseApi = {
     targetState: 'ACCEPTED' | 'DECLINED' | 'CANCELLED',
     expectedVersion: number
   ): Promise<ConnectionRequestDto> {
-    try {
-      const res = await fetch(`/api/v1/requests/${requestId}`, {
+    if (getAppMode() === 'live') {
+      return liveRequest<ConnectionRequestDto>(`/requests/${requestId}`, activeUserId, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', 'X-Pulse-User-Id': activeUserId },
         body: JSON.stringify({ targetState, expectedVersion }),
       });
-      if (res.ok) return await res.json();
-      if (res.status >= 400 && res.status < 500) {
-        const err = await res.json();
-        throw new Error(err.message || 'State transition failed');
-      }
-    } catch (e) {
-      if (e instanceof Error && e.message.startsWith('4')) throw e;
     }
 
-    // In-Browser 1-Transaction Pessimistic Lock Mirror (Proposal Page 15)
     const store = loadStore();
     const req = store.requests.find((r) => r.id === requestId);
-    if (!req) throw new Error('404: Request not found.');
+    if (!req) throw new PulseHttpError(404, 'RESOURCE_NOT_FOUND', '404: Request not found.');
     if (req.version !== expectedVersion || req.state !== 'PENDING') {
-      throw new Error(`409: Stale version or request is no longer PENDING (current state: ${req.state}).`);
+      throw new PulseHttpError(
+        409,
+        'STALE_VERSION',
+        `409: Stale version or request is no longer PENDING (current state: ${req.state}).`
+      );
     }
 
     const story = store.storiesAndUpdates.find((s) => s.id === req.storyId);
@@ -1248,10 +1316,10 @@ export const pulseApi = {
 
     if (targetState === 'ACCEPTED') {
       if (req.hostId !== activeUserId) {
-        throw new Error('403: Only the invitation host can accept this request.');
+        throw new PulseHttpError(403, 'FORBIDDEN_ACCESS', '403: Only the invitation host can accept this request.');
       }
       if (!inv || inv.acceptedCount >= inv.capacity) {
-        throw new Error('409: Full capacity reached — no remaining places this week.');
+        throw new PulseHttpError(409, 'CAPACITY_FULL', '409: Full capacity reached — no remaining places this week.');
       }
       inv.acceptedCount += 1;
       inv.remainingPlaces = Math.max(0, inv.capacity - inv.acceptedCount);
@@ -1261,25 +1329,15 @@ export const pulseApi = {
       req.version += 1;
       req.acceptedCount = inv.acceptedCount;
       req.remainingPlaces = inv.remainingPlaces;
-
-      store.auditLog.unshift({
-        id: 'aud_' + Math.random().toString(36).slice(2, 8),
-        actorId: activeUserId,
-        actionType: 'REQUEST_ACCEPTED',
-        targetType: 'CONNECTION_REQUEST',
-        targetId: req.id,
-        details: `Host ${req.hostName} accepted request from ${req.requesterName} (${inv.acceptedCount}/${inv.capacity} places used). Outbox event emitted.`,
-        createdAt: new Date().toISOString(),
-      });
     } else if (targetState === 'DECLINED') {
       if (req.hostId !== activeUserId) {
-        throw new Error('403: Only the invitation host can decline this request.');
+        throw new PulseHttpError(403, 'FORBIDDEN_ACCESS', '403: Only the invitation host can decline this request.');
       }
       req.state = 'DECLINED';
       req.version += 1;
     } else if (targetState === 'CANCELLED') {
       if (req.requesterId !== activeUserId) {
-        throw new Error('403: Only the requester can cancel their pending request.');
+        throw new PulseHttpError(403, 'FORBIDDEN_ACCESS', '403: Only the requester can cancel their pending request.');
       }
       req.state = 'CANCELLED';
       req.version += 1;
@@ -1295,26 +1353,18 @@ export const pulseApi = {
     happened: HappenedAnswer,
     useful: boolean | null
   ): Promise<ConnectionRequestDto> {
-    try {
-      const res = await fetch(`/api/v1/requests/${requestId}/confirmations`, {
+    if (getAppMode() === 'live') {
+      return liveRequest<ConnectionRequestDto>(`/requests/${requestId}/confirmations`, activeUserId, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Pulse-User-Id': activeUserId },
         body: JSON.stringify({ happened, useful }),
       });
-      if (res.ok) return await res.json();
-      if (res.status >= 400 && res.status < 500) {
-        const err = await res.json();
-        throw new Error(err.message || 'Feedback submission failed');
-      }
-    } catch (e) {
-      if (e instanceof Error && e.message.startsWith('4')) throw e;
     }
 
     const store = loadStore();
     const req = store.requests.find((r) => r.id === requestId);
-    if (!req) throw new Error('404: Request not found.');
+    if (!req) throw new PulseHttpError(404, 'RESOURCE_NOT_FOUND', '404: Request not found.');
     if (req.requesterId !== activeUserId && req.hostId !== activeUserId) {
-      throw new Error('403: Only the two participants can submit private feedback.');
+      throw new PulseHttpError(403, 'FORBIDDEN_ACCESS', '403: Only the two participants can submit private feedback.');
     }
 
     if (!store.confirmationsByRequest[requestId]) {
@@ -1337,19 +1387,11 @@ export const pulseApi = {
     contextId: string,
     userDraftText = ''
   ): Promise<AiAssistanceResponseDto> {
-    try {
-      const res = await fetch('/api/v1/ai/assist', {
+    if (getAppMode() === 'live') {
+      return liveRequest<AiAssistanceResponseDto>('/ai/assist', activeUserId, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Pulse-User-Id': activeUserId },
         body: JSON.stringify({ assistType, contextId, userDraftText }),
       });
-      if (res.ok) return await res.json();
-      if (res.status >= 400 && res.status < 500) {
-        const err = await res.json();
-        throw new Error(err.message || 'AI Assist refused');
-      }
-    } catch (e) {
-      if (e instanceof Error && e.message.startsWith('4')) throw e;
     }
 
     const store = loadStore();
@@ -1363,13 +1405,15 @@ export const pulseApi = {
       lower.includes('private message') ||
       lower.includes('salary')
     ) {
-      throw new Error(
-        '422: Refused by Mastek Pulse AI Trust Policy — cannot infer sensitive attributes, private messages, or employee appraisal scores.'
+      throw new PulseHttpError(
+        422,
+        'VALIDATION_FAILED',
+        '422: Refused by Mastek Campfire AI Trust Policy — cannot infer sensitive attributes, private messages, or employee appraisal scores.'
       );
     }
 
     if (story && !caller.audiences.includes(story.audienceId)) {
-      throw new Error('403: Access denied to restricted audience content.');
+      throw new PulseHttpError(403, 'FORBIDDEN_ACCESS', '403: Access denied to restricted audience content.');
     }
 
     const hostFirstName = story ? story.authorName.split(' ')[0] : 'Daniel';
@@ -1448,15 +1492,11 @@ export const pulseApi = {
       submitForReview: boolean;
     }
   ): Promise<PortalQueueItemDto> {
-    try {
-      const res = await fetch('/api/v1/content', {
+    if (getAppMode() === 'live') {
+      return liveRequest<PortalQueueItemDto>('/content', activeUserId, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Pulse-User-Id': activeUserId },
         body: JSON.stringify(payload),
       });
-      if (res.ok) return await res.json();
-    } catch {
-      // Fallback
     }
 
     const store = loadStore();
@@ -1490,29 +1530,30 @@ export const pulseApi = {
     };
 
     store.portalItems.unshift(newItem);
-    store.auditLog.unshift({
-      id: 'aud_' + Math.random().toString(36).slice(2, 8),
-      actorId: caller.id,
-      actionType: payload.submitForReview ? 'CONTENT_SUBMITTED' : 'DRAFT_SAVED',
-      targetType: 'CONTENT_REVISION',
-      targetId: revId,
-      details: `${caller.displayName} ${
-        payload.submitForReview ? 'submitted Revision 1 for review' : 'saved Draft Revision 1'
-      } ("${newItem.title}") for audience ${newItem.audienceName}.`,
-      createdAt: new Date().toISOString(),
-    });
     saveStore(store);
     return newItem;
   },
 
   async getPortalQueue(activeUserId: string): Promise<PortalQueueItemDto[]> {
-    try {
-      const res = await fetch('/api/v1/portal/queue', { headers: { 'X-Pulse-User-Id': activeUserId } });
-      if (res.ok) return await res.json();
-    } catch {
-      // Fallback
+    if (getAppMode() === 'live') {
+      return liveRequest<PortalQueueItemDto[]>('/portal/queue', activeUserId);
     }
-    return loadStore().portalItems;
+    const store = loadStore();
+    const caller = store.users.find((u) => u.id === activeUserId);
+    if (
+      !caller ||
+      (!caller.roles.includes('REVIEWER') &&
+        !caller.roles.includes('PUBLISHER') &&
+        !caller.roles.includes('MODERATOR') &&
+        !caller.roles.includes('ADMIN'))
+    ) {
+      throw new PulseHttpError(
+        403,
+        'FORBIDDEN_ACCESS',
+        `403: User '${caller?.displayName || activeUserId}' lacks Publishing Portal role.`
+      );
+    }
+    return store.portalItems.filter((item) => caller.audiences.includes(item.audienceId));
   },
 
   async reviewRevision(
@@ -1522,35 +1563,35 @@ export const pulseApi = {
     decision: 'APPROVE' | 'REQUEST_CHANGES',
     notes: string
   ): Promise<PortalQueueItemDto> {
-    try {
-      const res = await fetch(`/api/v1/content/${contentId}/review`, {
+    if (getAppMode() === 'live') {
+      return liveRequest<PortalQueueItemDto>(`/content/${contentId}/review`, activeUserId, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Pulse-User-Id': activeUserId },
         body: JSON.stringify({ revisionNumber, decision, notes }),
       });
-      if (res.ok) return await res.json();
-      if (res.status >= 400 && res.status < 500) {
-        const err = await res.json();
-        throw new Error(err.message || 'Review failed');
-      }
-    } catch (e) {
-      if (e instanceof Error && e.message.startsWith('4')) throw e;
     }
 
     const store = loadStore();
     const caller = store.users.find((u) => u.id === activeUserId) || store.users[0];
     if (!caller.roles.includes('REVIEWER')) {
-      throw new Error(`403: User '${caller.displayName}' lacks required scoped role: REVIEWER (Admin has no automatic editorial approval right).`);
+      throw new PulseHttpError(
+        403,
+        'FORBIDDEN_ACCESS',
+        `403: User '${caller.displayName}' lacks required scoped role: REVIEWER.`
+      );
     }
 
     const item = store.portalItems.find((i) => i.id === contentId);
-    if (!item) throw new Error('404: Content item not found.');
+    if (!item) throw new PulseHttpError(404, 'RESOURCE_NOT_FOUND', '404: Content item not found.');
 
     if (item.authorId === caller.id) {
-      throw new Error('403: Self-Approval Denied — Reviewers cannot approve their own submissions (author == reviewer).');
+      throw new PulseHttpError(
+        403,
+        'SELF_APPROVAL_DENIED',
+        '403: Self-Approval Denied — Reviewers cannot approve their own submissions.'
+      );
     }
-    if (item.currentVersion !== revisionNumber) {
-      throw new Error(`409: Revision ${revisionNumber} is stale; current version is ${item.currentVersion}.`);
+    if (item.currentVersion !== revisionNumber || item.status !== 'IN_REVIEW') {
+      throw new PulseHttpError(409, 'STALE_VERSION', `409: Revision ${revisionNumber} is not awaiting review.`);
     }
 
     if (decision === 'APPROVE') {
@@ -1566,17 +1607,11 @@ export const pulseApi = {
     }
     item.updatedAt = new Date().toISOString();
 
-    store.auditLog.unshift({
-      id: 'aud_' + Math.random().toString(36).slice(2, 8),
-      actorId: caller.id,
-      actionType: decision === 'APPROVE' ? 'REVISION_APPROVED' : 'CHANGES_REQUESTED',
-      targetType: 'CONTENT_REVISION',
-      targetId: item.revisionId,
-      details: `Reviewer ${caller.displayName} ${
-        decision === 'APPROVE' ? 'approved' : 'requested changes on'
-      } Revision ${revisionNumber} of "${item.title}".`,
-      createdAt: new Date().toISOString(),
-    });
+    const chEntry = store.challengeEntriesByUser[item.authorId];
+    if (chEntry && chEntry.contentId === item.id) {
+      chEntry.status = item.status;
+      chEntry.reviewerNotes = item.reviewerNotes;
+    }
 
     saveStore(store);
     return item;
@@ -1588,31 +1623,31 @@ export const pulseApi = {
     mode: 'IMMEDIATE' | 'SCHEDULED',
     scheduledFor?: string
   ): Promise<PortalQueueItemDto> {
-    try {
-      const res = await fetch(`/api/v1/content/${contentId}/publish`, {
+    if (getAppMode() === 'live') {
+      return liveRequest<PortalQueueItemDto>(`/content/${contentId}/publish`, activeUserId, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Pulse-User-Id': activeUserId },
         body: JSON.stringify({ mode, scheduledFor }),
       });
-      if (res.ok) return await res.json();
-      if (res.status >= 400 && res.status < 500) {
-        const err = await res.json();
-        throw new Error(err.message || 'Publish failed');
-      }
-    } catch (e) {
-      if (e instanceof Error && e.message.startsWith('4')) throw e;
     }
 
     const store = loadStore();
     const caller = store.users.find((u) => u.id === activeUserId) || store.users[0];
     if (!caller.roles.includes('PUBLISHER')) {
-      throw new Error(`403: User '${caller.displayName}' lacks required scoped role: PUBLISHER.`);
+      throw new PulseHttpError(
+        403,
+        'FORBIDDEN_ACCESS',
+        `403: User '${caller.displayName}' lacks required scoped role: PUBLISHER.`
+      );
     }
 
     const item = store.portalItems.find((i) => i.id === contentId);
-    if (!item) throw new Error('404: Content item not found.');
+    if (!item) throw new PulseHttpError(404, 'RESOURCE_NOT_FOUND', '404: Content item not found.');
     if (item.status !== 'APPROVED' || !item.approvedBy) {
-      throw new Error(`409: Revision ${item.currentVersion} cannot be published because it is not APPROVED.`);
+      throw new PulseHttpError(
+        409,
+        'STALE_VERSION',
+        `409: Revision ${item.currentVersion} cannot be published because it is not APPROVED.`
+      );
     }
 
     if (mode === 'SCHEDULED') {
@@ -1623,8 +1658,6 @@ export const pulseApi = {
       item.publishedVersion = item.currentVersion;
       item.scheduledFor = null;
 
-      // Also push to live Employee Feed if it's a STORY or UPDATE
-      const existingFeedIdx = store.storiesAndUpdates.findIndex((s) => s.id === item.id);
       const author = store.users.find((u) => u.id === item.authorId);
       const liveCard: ContentCardDto = {
         id: item.id,
@@ -1645,42 +1678,20 @@ export const pulseApi = {
         publishedAt: new Date().toISOString(),
         factualExplanation: `WHY THIS? Newly published to ${item.audienceName}`,
         hasAudio: item.hasAudio,
-        invitation: {
-          id: 'inv_' + item.id,
-          hostId: item.authorId,
-          hostName: item.authorName,
-          hostRegion: author?.region || 'INDIA',
-          hostFunction: author?.functionName || 'Colleague',
-          topicLabel: 'Ask me about this: ' + item.title,
-          durationMinutes: 15,
-          capacity: 2,
-          acceptedCount: 0,
-          remainingPlaces: 2,
-          paused: false,
-          expiresAt: '2026-11-20T23:59:59Z',
-          statusLabel: 'OPEN',
-        },
+        invitation: null,
       };
-      if (existingFeedIdx >= 0) {
-        store.storiesAndUpdates[existingFeedIdx] = liveCard;
-      } else if (item.contentType === 'STORY' || item.contentType === 'UPDATE') {
-        store.storiesAndUpdates.unshift(liveCard);
+      const existingFeedIdx = store.storiesAndUpdates.findIndex((s) => s.id === item.id);
+      if (existingFeedIdx >= 0) store.storiesAndUpdates[existingFeedIdx] = liveCard;
+      else if (item.contentType === 'STORY' || item.contentType === 'UPDATE') store.storiesAndUpdates.unshift(liveCard);
+
+      const chEntry = store.challengeEntriesByUser[item.authorId];
+      if (chEntry && chEntry.contentId === item.id) {
+        chEntry.status = 'PUBLISHED';
+        chEntry.pointsAwarded = 20;
       }
     }
 
     item.updatedAt = new Date().toISOString();
-    store.auditLog.unshift({
-      id: 'aud_' + Math.random().toString(36).slice(2, 8),
-      actorId: caller.id,
-      actionType: mode === 'SCHEDULED' ? 'CONTENT_SCHEDULED' : 'CONTENT_PUBLISHED',
-      targetType: 'CONTENT_ITEM',
-      targetId: item.id,
-      details: `Publisher ${caller.displayName} ${
-        mode === 'SCHEDULED' ? 'scheduled' : 'published'
-      } Revision ${item.currentVersion} of "${item.title}" to ${item.audienceName}.`,
-      createdAt: new Date().toISOString(),
-    });
-
     saveStore(store);
     return item;
   },
@@ -1692,23 +1703,17 @@ export const pulseApi = {
     newBody: string,
     newAudienceId: string
   ): Promise<PortalQueueItemDto> {
-    try {
-      const res = await fetch(`/api/v1/content/${contentId}/revisions`, {
+    if (getAppMode() === 'live') {
+      return liveRequest<PortalQueueItemDto>(`/content/${contentId}/revisions`, activeUserId, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json', 'X-Pulse-User-Id': activeUserId },
         body: JSON.stringify({ title: newTitle, bodyText: newBody, audienceId: newAudienceId }),
       });
-      if (res.ok) return await res.json();
-    } catch {
-      // Fallback
     }
 
     const store = loadStore();
-    const caller = store.users.find((u) => u.id === activeUserId) || store.users[0];
     const item = store.portalItems.find((i) => i.id === contentId);
-    if (!item) throw new Error('404: Content item not found.');
+    if (!item) throw new PulseHttpError(404, 'RESOURCE_NOT_FOUND', '404: Content item not found.');
 
-    const prevStatus = item.status;
     item.currentVersion += 1;
     item.revisionId = `rev_${contentId}_v${item.currentVersion}`;
     item.title = newTitle.trim();
@@ -1716,50 +1721,35 @@ export const pulseApi = {
     item.summary = newBody.trim().slice(0, 120) + (newBody.length > 120 ? '...' : '');
     item.audienceId = newAudienceId;
     item.audienceName = newAudienceId === 'aud_all' ? 'All employees' : 'Colleagues in the pilot';
-    // Critical Invariant (Proposal Page 11): "Any content or audience edit invalidates approval and returns the new revision to review."
     item.approvedBy = null;
     item.approvedByName = null;
     item.status = 'IN_REVIEW';
     item.updatedAt = new Date().toISOString();
-
-    store.auditLog.unshift({
-      id: 'aud_' + Math.random().toString(36).slice(2, 8),
-      actorId: caller.id,
-      actionType: 'EDIT_INVALIDATED_APPROVAL',
-      targetType: 'CONTENT_REVISION',
-      targetId: item.revisionId,
-      details: `${caller.displayName} edited content/audience on "${item.title}" -> created Revision ${item.currentVersion}, invalidated prior approval (${prevStatus}), and returned to IN_REVIEW.`,
-      createdAt: new Date().toISOString(),
-    });
 
     saveStore(store);
     return item;
   },
 
   async withdrawContent(activeUserId: string, contentId: string, reason: string): Promise<PortalQueueItemDto> {
-    try {
-      const res = await fetch(`/api/v1/content/${contentId}/withdraw`, {
+    if (getAppMode() === 'live') {
+      return liveRequest<PortalQueueItemDto>(`/content/${contentId}/withdraw`, activeUserId, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Pulse-User-Id': activeUserId },
         body: JSON.stringify({ reason }),
       });
-      if (res.ok) return await res.json();
-      if (res.status >= 400 && res.status < 500) {
-        const err = await res.json();
-        throw new Error(err.message || 'Withdraw failed');
-      }
-    } catch (e) {
-      if (e instanceof Error && e.message.startsWith('4')) throw e;
     }
 
     const store = loadStore();
     const caller = store.users.find((u) => u.id === activeUserId) || store.users[0];
     if (!caller.roles.includes('PUBLISHER') && !caller.roles.includes('MODERATOR')) {
-      throw new Error(`403: Requires PUBLISHER or MODERATOR role to withdraw content.`);
+      throw new PulseHttpError(
+        403,
+        'FORBIDDEN_ACCESS',
+        '403: Requires PUBLISHER or MODERATOR role to withdraw content.'
+      );
     }
 
     const item = store.portalItems.find((i) => i.id === contentId);
-    if (!item) throw new Error('404: Item not found.');
+    if (!item) throw new PulseHttpError(404, 'RESOURCE_NOT_FOUND', '404: Item not found.');
 
     item.status = 'WITHDRAWN';
     item.publishedVersion = null;
@@ -1768,31 +1758,45 @@ export const pulseApi = {
     const feedItem = store.storiesAndUpdates.find((s) => s.id === contentId);
     if (feedItem) feedItem.status = 'WITHDRAWN';
 
-    store.auditLog.unshift({
-      id: 'aud_' + Math.random().toString(36).slice(2, 8),
-      actorId: caller.id,
-      actionType: 'CONTENT_WITHDRAWN',
-      targetType: 'CONTENT_ITEM',
-      targetId: item.id,
-      details: `${caller.displayName} withdrew "${item.title}". Reason: ${reason}`,
-      createdAt: new Date().toISOString(),
-    });
+    const chEntry = store.challengeEntriesByUser[item.authorId];
+    if (chEntry && chEntry.contentId === item.id) {
+      chEntry.status = 'WITHDRAWN';
+      chEntry.pointsAwarded = 0;
+    }
 
     saveStore(store);
     return item;
   },
 
   async getAuditLog(activeUserId: string): Promise<AuditEventDto[]> {
-    try {
-      const res = await fetch('/api/v1/portal/audit-log', { headers: { 'X-Pulse-User-Id': activeUserId } });
-      if (res.ok) return await res.json();
-    } catch {
-      // Fallback
+    if (getAppMode() === 'live') {
+      return liveRequest<AuditEventDto[]>('/portal/audit-log', activeUserId);
     }
-    return loadStore().auditLog;
+    const store = loadStore();
+    const caller = store.users.find((u) => u.id === activeUserId);
+    if (
+      !caller ||
+      (!caller.roles.includes('REVIEWER') &&
+        !caller.roles.includes('PUBLISHER') &&
+        !caller.roles.includes('MODERATOR') &&
+        !caller.roles.includes('ADMIN'))
+    ) {
+      throw new PulseHttpError(403, 'FORBIDDEN_ACCESS', '403: Portal role required to view audit log.');
+    }
+    return store.auditLog;
   },
 
-  async getPilotMetricsAndBudget(activeUserId: string): Promise<{ metrics: PilotMetricsDto; budget: AiBudgetStatusDto }> {
+  async getPilotMetricsAndBudget(
+    activeUserId: string
+  ): Promise<{ metrics: PilotMetricsDto; budget: AiBudgetStatusDto }> {
+    if (getAppMode() === 'live') {
+      const [metrics, budget] = await Promise.all([
+        liveRequest<PilotMetricsDto>('/pilot/metrics', activeUserId),
+        liveRequest<AiBudgetStatusDto>('/ai/budget', activeUserId),
+      ]);
+      return { metrics, budget };
+    }
+
     const store = loadStore();
     const accepted = store.requests.filter((r) => r.state === 'ACCEPTED');
     const declined = store.requests.filter((r) => r.state === 'DECLINED');
@@ -1845,7 +1849,18 @@ export const pulseApi = {
     };
   },
 
-  async simulateAiBudgetLevel(level: 'NORMAL' | 'ALERT_50' | 'ALERT_80' | 'CAPPED_100'): Promise<void> {
+  async simulateAiBudgetLevel(
+    activeUserId: string,
+    level: 'NORMAL' | 'ALERT_50' | 'ALERT_80' | 'CAPPED_100'
+  ): Promise<void> {
+    if (getAppMode() === 'live') {
+      const capMap = { NORMAL: 720, ALERT_50: 6, ALERT_80: 4, CAPPED_100: 1 };
+      await liveRequest<unknown>('/ai/budget/simulate-cap', activeUserId, {
+        method: 'POST',
+        body: JSON.stringify({ actionCap: capMap[level] }),
+      });
+      return;
+    }
     const store = loadStore();
     if (level === 'NORMAL') store.aiActionsUsed = 18;
     else if (level === 'ALERT_50') store.aiActionsUsed = 365;

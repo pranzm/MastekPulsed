@@ -11,7 +11,9 @@
 3. [Lesson 2: Contract-First Engineering, Database Invariants & Deterministic Seed Data](#lesson-2-contract-first-engineering-database-invariants--deterministic-seed-data)
 4. [Lesson 3: Atomic Vertical Slices, 1-Transaction Pessimistic Locking & The 30-Case AI Trust Gate](#lesson-3-atomic-vertical-slices-1-transaction-pessimistic-locking--the-30-case-ai-trust-gate)
 5. [Lesson 4 & 5: Cross-Platform Contract Sharing (Web, Portal & Mobile) & Resilient Demo Engineering](#lesson-4--5-cross-platform-contract-sharing-web-portal--mobile--resilient-demo-engineering)
-6. [Decision Log (ADRs)](#decision-log-adrs)
+6. [Lesson 6: Product Evolution in AI-DLC (Mastek Campfire) — Explicit Transports, Snapshot Isolation & Ledger Recognition](#lesson-6-product-evolution-in-ai-dlc-mastek-campfire--explicit-transports-snapshot-isolation--ledger-recognition)
+7. [Lesson 7: From Hackathon POC to Production MVP — Dual-Axis Scaling (Users & Features)](#lesson-7-from-hackathon-poc-to-production-mvp--dual-axis-scaling-users--features)
+8. [Decision Log (ADRs)](#decision-log-adrs)
 
 ---
 
@@ -124,3 +126,60 @@ Different AI coding assistants automatically read different "magic files" when o
 | **ADR-005** | 2026-11-05 | **Dual-Mode PostgreSQL Flyway Setup:** Support both zero-install `MODE=PostgreSQL` and Docker `postgres:16-alpine` | Eliminates Hackathon onboarding friction for developers and AI agents while keeping 100% SQL migration parity with production PostgreSQL 16. |
 | **ADR-006** | 2026-11-05 | **ASCII Architecture & Code Flow Diagrams:** `03-architecture-and-guardrails.md` uses plain-text ASCII diagrams (no Mermaid) plus per-endpoint code flows (Section 5) | ASCII renders identically in every IDE, terminal, `git diff`, and AI agent context window without a renderer. Code flows name the owning `Controller -> Service -> Repository` method, the `@Transactional` boundary, and each guardrail's HTTP status, so agents implement the backlog without guessing. |
 | **ADR-007** | 2026-11-05 | **Microservices Evolution Blueprint (Strangler-Fig):** Strict package-level table ownership + service façades + transactional outbox in `03-architecture-and-guardrails.md` (Section 6) | Keeps Day-1 POC velocity high inside a single Spring Boot deployment while guaranteeing any module (`ai`, `outbox`, `listen`, `connection`, `content`) can be extracted into an independent microservice and database in 4 incremental stages with zero client `/api/v1/*` changes. |
+| **ADR-008** | 2026-11-17 | **Explicit `demo` vs `live` Transport Selection (`CF-003`):** Replace silent catch-all fallback in `apiClient.ts` with explicit `VITE_APP_MODE=demo\|live` and `PulseHttpError` | Silent fallback masked real `403`/`409`/`500` backend bugs during development and caused split-brain state between PostgreSQL and browser memory. Explicit mode selection keeps the standalone demo rock-solid while making live integration 100% honest. |
+| **ADR-009** | 2026-11-17 | **Published Snapshot Isolation (`published_version` + `published_audience_id`, `CF-004`/`CF-010`):** Separate live published audience & text from mutable draft revisions | When an already-published item (`cc_ep_03`) has a new draft revision (`Rev #3`) in review, editing the draft's title, body, or audience must never leak to employees or change who can see the live `Rev #2` snapshot. |
+| **ADR-010** | 2026-11-17 | **Synchronous Transactional Recognition Ledger (`CF-005`–`CF-007`):** Write `recognition_events` and `weekly_badges` inside the same `@Transactional` boundary as `publishNow()`, `withdraw()`, and `appreciate()` | Recognition points (`+20` on publish, `-20` on withdraw, `+5` on appreciation) are financial-grade invariants in a gamified system. Committing ledger events synchronously in the same database transaction with unique idempotency keys guarantees zero lost or double-counted points, while `outbox_events` handles asynchronous notifications. |
+| **ADR-011** | 2026-11-17 | **Dual-Axis MVP & Scalability Blueprint (`06-mvp-and-scalability-plan.md`):** Scale User Volume via 4 Infrastructure Tiers (Single Node -> Redis -> Read Replica + Write-Behind Buffer -> Strangler-Fig) and Scale Features via Port/Adapter Extension Interfaces + Audience Feature Flags | Prevents premature microservice complexity during the 50–500 user MVP pilot while guaranteeing zero core rewrites when scaling to 10,000+ users or adding Voice (`Saathi`), Teams Calendar, and `pgvector` semantic discovery. |
+
+---
+
+## Lesson 6: Product Evolution in AI-DLC (Mastek Campfire) — Explicit Transports, Snapshot Isolation & Ledger Recognition
+**Date:** 2026-11-17
+**Context:** Rebranding **Mastek Pulse** to **Mastek Campfire** (Proposal Pages 16–19) and executing the Codex handoff plan (`D0`–`D5`: Weekly Challenges, Editorial Publication Rewards, Colleague Appreciations, Badges, Opt-In Leaderboard, and Saathi Grounded Summaries).
+
+### Key Takeaways Taught
+1. **Why Silent Fallback is an Anti-Pattern During Full-Stack Integration (`D1` / `CF-003`):**
+   - In Lesson 5, our first version of `apiClient.ts` caught *any* error from `fetch('/api/v1/...')` and silently fell back to the browser demo engine.
+   - **The Trap:** If a developer broke a backend endpoint or triggered a `403 Forbidden` / `409 Conflict`, the UI hid the error and returned fake browser data! Even worse, ordinary employees (`usr_asha`) were calling `/api/v1/portal/queue` on page load.
+   - **The AI-DLC Fix:**
+     1. Make transport mode explicit (`DEMO ENGINE` vs `LIVE API` via `VITE_APP_MODE=demo|live`). In `live` mode, never fall back to synthetic browser data; throw a typed `PulseHttpError(status, code, message)` and surface an actionable error banner.
+     2. Load `/api/v1/me` first, and only request `/api/v1/portal/*` when the authenticated user actually holds a portal role (`CREATOR`, `REVIEWER`, `PUBLISHER`, `MODERATOR`, `ADMIN`).
+     3. When viewing the standalone `/campfire/index.html` demo surface, do not fire background `/api/v1/*` requests.
+
+2. **Published Snapshot Isolation vs. Mutable Drafts (`D2` / `CF-004` & `CF-010`):**
+   - Suppose Culture Cast Episode 04 (`cc_ep_03`) has `published_version = 2` live for `aud_all`, while an editor creates `current_version = 3` and changes the draft audience to `aud_uk_delivery`.
+   - If the employee feed or `GET /api/v1/content/{id}` reads `item.getAudienceId()` or `item.getCurrentVersion()`, two bugs happen:
+     1. Employees outside `aud_uk_delivery` suddenly lose access to the already-published `Rev #2`!
+     2. Or worse, employees or `POST /api/v1/ai/summaries` (Saathi) read unapproved `Rev #3` text before a reviewer approves and publishes it!
+   - **The Fix:** We added `published_audience_id` on `content_items` and `audience_id` on `content_revisions` in `V3__campfire_challenges_and_recognition.sql`. Employee feeds, `GET /api/v1/content/{id}`, and Saathi summaries **only** read `published_version` and `published_audience_id`. Authors and portal reviewers inspect unapproved revisions via the dedicated `GET /api/v1/content/{id}/preview` endpoint.
+
+3. **Why We Never Rewrite Applied Flyway Migrations (`D3`):**
+   - In production (and multi-developer branches), `V1__init_schema.sql` and `V2__seed_pilot_data.sql` have already been checksummed by Flyway. Modifying `V1` or `V2` breaks every existing database with a `FlywayChecksumMismatchException`.
+   - Instead, all Campfire schema changes (`challenges`, `challenge_entries`, `appreciations`, `recognition_events`, `recognition_preferences`, `weekly_badges`, and new columns on `content_items`/`users`) were placed in `V3__campfire_challenges_and_recognition.sql`.
+   - And when we discovered `V2` used H2's `DATEADD('HOUR', -6, CURRENT_TIMESTAMP)` function, instead of editing `V2`, we registered a lightweight PostgreSQL compatibility function `public.dateadd(text, int, timestamptz)` in [`PostgresCompatibilityConfig.java`](backend/src/main/java/com/mastek/pulse/common/PostgresCompatibilityConfig.java) so both H2 and real PostgreSQL 16 run `V1` -> `V2` -> `V3` with zero checksum changes!
+
+4. **Event-Sourced Recognition Ledger & Event-Time Team Snapshots (`D4` & `D5` / `CF-005`–`CF-007`):**
+   - Why store an append-only `recognition_events` ledger instead of just an `int points` column on `users`?
+     - **Auditability & Caps:** Every point award has a rule (`+20` on publication—never on draft or approval; `+5` for appreciating up to 3 stories/week; `+5` for receiving appreciation from up to 5 distinct colleagues/week; max `60` points/week; `-20` reversal if withdrawn in the same UTC week).
+     - **Idempotency:** By enforcing `UNIQUE (event_type, beneficiary_id, content_id, actor_id, week_start)` on `recognition_events`, repeated publish clicks or network retries can never double-award points.
+     - **Historical Accuracy (`giver_team` / `author_team` snapshot):** The `Connection Maker` badge rewards cross-team appreciation. By snapshotting `giver_team` and `author_team` on the `appreciations` row at the moment the appreciation happens, a later org-chart move never retroactively invalidates a badge earned earlier in the week.
+     - **Deterministic Time Testing (`PulseClock`):** Weekly resets happen at `Monday 00:00:00 UTC`. Injecting [`PulseClock.java`](backend/src/main/java/com/mastek/pulse/common/PulseClock.java) let us write an automated test in [`CampfireChallengeAndRecognitionTest.java`](backend/src/test/java/com/mastek/pulse/CampfireChallengeAndRecognitionTest.java) that jumps from `Sunday 23:59:59Z` to `Monday 00:00:00Z` and proves the weekly cap resets cleanly.
+
+---
+
+## Lesson 7: From Hackathon POC to Production MVP — Dual-Axis Scaling (Users & Features)
+**Date:** 2026-11-17
+**Context:** Designing the transition from our verified Hackathon POC to a Production MVP (`50–500` pilot users) that scales smoothly to `10,000+` employees and new feature modules ([`docs/aidlc/06-mvp-and-scalability-plan.md`](docs/aidlc/06-mvp-and-scalability-plan.md)).
+
+### Key Takeaways Taught
+1. **The Difference Between a POC and an MVP:**
+   - **POC (Proof of Concept):** Proves the core business rules, UX flows, and data invariants work using synthetic personas (`X-Pulse-User-Id`), seeded data (`V2`/`V3`), and local/simulated external adapters.
+   - **MVP (Minimum Viable Product):** The smallest production-ready system that can safely serve real Mastek employees (`50–500` pilot users). It replaces synthetic auth with **Entra ID OIDC + PKCE**, local audio URLs with **15-minute cryptographic SAS/Signed URLs on private Blob/S3 storage**, and console outbox logs with **Microsoft Teams / Email delivery**, while keeping our dev persona switcher strictly behind `@Profile("dev")`.
+2. **Axis 1 — Scaling by User Volume Without Rewriting Code (4 Tiers):**
+   - **Tier 1 (`50–500 Users`):** 1–2 Spring Boot pods (Java 21 Virtual Threads) + 1 Managed PostgreSQL 16 + Caffeine in-memory cache + Blob/S3 signed URLs.
+   - **Tier 2 (`1,000–2,500 Users`):** 2–3 stateless pods + shared **Redis Cache** (`spring.cache.type=redis`) + multi-node Outbox polling (`FOR UPDATE SKIP LOCKED`).
+   - **Tier 3 (`10,000+ Users` / 2,500 Concurrent Commuters):** 4–6 pods + **PostgreSQL Read Replica** (`@Transactional(readOnly = true)` routing for feeds/leaderboards) + **Redis Write-Behind Buffer** for high-frequency `PUT /api/v1/listen/progress` heartbeats (flushing every 30s to cut DB writes by 95%).
+   - **Tier 4 (`50,000+ Enterprise`):** Incremental Strangler-Fig microservice extraction (`ai-saathi-service`, `listen-media-service`, `notification-worker`) and monthly table partitioning on `recognition_events` and `audit_events`.
+3. **Axis 2 — Scaling by Features via Open/Closed Extension Ports:**
+   - New features plug into our 8 domain packages via **Port/Adapter interfaces** (`OutboxEventHandler`, `BadgeRuleEvaluator`, `FeedRankingStrategy`, `AiCompletionPort`, `VoiceSpeechPort`, `MediaUrlSignerPort`) and **Audience-Scoped Feature Flags** (`feature_flags` keyed by `audience_id`, rolling out to `aud_pilot` before `aud_all`).
+   - Database and API changes follow **Expand-and-Contract** (`V4`, `V5` additive migrations + additive OpenAPI fields) so mobile and web clients never experience downtime.

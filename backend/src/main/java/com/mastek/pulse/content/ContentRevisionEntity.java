@@ -14,13 +14,13 @@ import java.util.List;
  * INTERN & AI AGENT GUIDE — WHAT IS THIS FILE?
  * ============================================================================
  * File: ContentRevisionEntity.java
- * Journey: Revision-Based Review & Publishing (Proposal Pages 8, 11, 15).
+ * Journey: Revision-Based Review & Publishing (Proposal Pages 8, 11, 15 + CF-010).
  * Why it is designed this way:
  *   Page 11 & 15 mandate: "Approvals bind to a revision. Any content or audience
  *   edit invalidates approval and returns the new revision to review."
  *   Each row in `content_revisions` captures an immutable snapshot (`version_number`)
- *   of the title, summary, body, tags, audio metadata, transcript, and who
- *   approved that specific revision (`approvedBy`).
+ *   of the title, summary, body, target `audienceId`, tags, audio metadata,
+ *   transcript, and who approved that specific revision (`approvedBy`).
  * ============================================================================
  */
 @Entity
@@ -36,6 +36,9 @@ public class ContentRevisionEntity {
 
     @Column(name = "version_number", nullable = false)
     private int versionNumber;
+
+    @Column(name = "audience_id", length = 64)
+    private String audienceId;
 
     @Column(name = "title", nullable = false, length = 200)
     private String title;
@@ -103,6 +106,9 @@ public class ContentRevisionEntity {
 
     public int getVersionNumber() { return versionNumber; }
     public void setVersionNumber(int versionNumber) { this.versionNumber = versionNumber; }
+
+    public String getAudienceId() { return audienceId; }
+    public void setAudienceId(String audienceId) { this.audienceId = audienceId; }
 
     public String getTitle() { return title; }
     public void setTitle(String title) { this.title = title; }

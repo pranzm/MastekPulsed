@@ -1,4 +1,4 @@
-# Mastek Pulse — AI-DLC Phase 2: Domain Model, State Machines, and API Contracts
+# Mastek Campfire — AI-DLC Phase 2: Domain Model, State Machines, and API Contracts
 
 > **🎓 Intern & AI Agent Guide:**
 > In AI-DLC, this file is our **Contract Specification**. Why is this the most important file in the repository?
@@ -151,3 +151,13 @@ All clients (Android, iOS, Employee Web, Publishing Portal) share `/api/v1`:
 | **Connections & Feedback** | `POST /api/v1/requests`<br>`GET /api/v1/requests`<br>`PATCH /api/v1/requests/{id}`<br>`POST /api/v1/requests/{id}/confirmations` | `POST /requests` requires `Idempotency-Key` header so mobile retries never create duplicate requests. `PATCH` runs the 1-transaction locked Accept/Decline/Cancel flow. `POST /confirmations` saves bilateral private feedback. |
 | **Publishing & Review Portal** | `POST /api/v1/content`<br>`PUT /api/v1/content/{id}/revisions`<br>`POST /api/v1/content/{id}/submit`<br>`POST /api/v1/content/{id}/review`<br>`POST /api/v1/content/{id}/publish`<br>`POST /api/v1/content/{id}/withdraw` | Implements `Draft > In review > Approved > Scheduled/Published > Withdrawn`. Enforces `REVIEWER` role (no self-approval) and `PUBLISHER` role. Any content/audience edit after approval creates a new revision in `IN_REVIEW`. |
 | **AI Assistance & Budget Gate** | `POST /api/v1/ai/drafts`<br>`POST /api/v1/ai/summaries`<br>`GET /api/v1/ai/budget` | Checks the 720-action budget cap (50%/80%/100% alerts). Sends only permitted text. Always returns both `aiSuggestion` (labeled) and `templateFallback` so the UI works seamlessly even if AI is disabled or capped. |
+| **Campfire Challenges & Recognition (`V3`)** | `GET /api/v1/challenges/current`<br>`POST /api/v1/challenges/{id}/entries`<br>`POST /api/v1/content/{id}/appreciations`<br>`GET /api/v1/recognition/me`<br>`GET /api/v1/recognition/leaderboard`<br>`PUT /api/v1/recognition/preferences` | Implements weekly voluntary challenges (*"Beyond My Job Title"*), +20 points on actual publication (0 on submit/approve), +5 give/receive appreciation caps (max 60 pts/wk), 3 badges, withdrawal reversal, and optional top-5 Community Champions leaderboard. See [`docs/campfire/NEW-CONTRACTS.md`](../campfire/NEW-CONTRACTS.md). |
+
+---
+
+## 5. Campfire Weekly Challenge & Recognition Extension (`V3__campfire_challenges_and_recognition.sql`)
+
+Added on 17 November 2026 per [`docs/campfire/NEW-CONTRACTS.md`](../campfire/NEW-CONTRACTS.md):
+- **Published Snapshot Isolation:** `content_items.published_audience_id` and `content_revisions.audience_id` ensure editing a draft's audience never broadens access to the previously published revision, and employee reads (`GET /api/v1/stories/{id}`, `POST /api/v1/ai/assist`) strictly read `published_version` and `published_audience_id` (while owners and scoped editors use `GET /api/v1/content/{id}/preview`).
+- **Transactional Recognition Ledger (`recognition_events`):** Awards `+20` (`PUBLISHED_CONTRIBUTION`) inside the publication transaction (`PublishingWorkflowService.publishOrSchedule`) at most once per `(user_id, week_start)`, with unique `source_event_id` preventing duplicate awards on retry. Withdrawing a story inserts a compensating `REVERSAL_WITHDRAWN` row (`reversal_of = original.id`).
+- **Appreciation & Badges (`appreciations`, `weekly_badges`, `recognition_preferences`):** Tracks distinct appreciators and event-time team snapshots (`actor_team_snapshot`, `recipient_team_snapshot`) for *First Spark*, *Connection Maker* (3 teams), and *Community Favourite* (5 distinct colleagues), with Monday `00:00 UTC` week boundaries.

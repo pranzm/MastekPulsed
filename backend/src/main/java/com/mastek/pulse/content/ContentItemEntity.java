@@ -13,13 +13,16 @@ import java.time.Instant;
  * ============================================================================
  * File: ContentItemEntity.java
  * Journey: Discovery Feed, Mastek Radio, Culture Cast & Controlled Publishing
- *          (Proposal Pages 3, 6, 8, 9, 10, 11, 15).
+ *          (Proposal Pages 3, 6, 8, 9, 10, 11, 15 + Campfire CF-010).
  * Why it is designed this way:
  *   Represents the parent identity of a piece of content (`STORY`, `UPDATE`,
- *   `CULTURE_CAST`, `RADIO_QUEUE`). Notice how `currentVersion` tracks the
- *   latest draft/review revision while `publishedVersion` tracks the revision
- *   currently live to employees! This guarantees that editing an approved or
- *   published item never leaks unapproved edits to readers.
+ *   `CULTURE_CAST`, `RADIO_QUEUE`).
+ *   1. `currentVersion` tracks the latest draft/review revision while
+ *      `publishedVersion` tracks the revision currently live to employees.
+ *   2. `publishedAudienceId` tracks the immutable audience of the live
+ *      `publishedVersion` snapshot, while `audienceId` tracks the working
+ *      audience of `currentVersion`. This guarantees that editing a draft's
+ *      audience never broadens access to the previously published text!
  * ============================================================================
  */
 @Entity
@@ -35,6 +38,9 @@ public class ContentItemEntity {
 
     @Column(name = "audience_id", nullable = false, length = 64)
     private String audienceId;
+
+    @Column(name = "published_audience_id", length = 64)
+    private String publishedAudienceId;
 
     @Column(name = "content_type", nullable = false, length = 32)
     private String contentType; // STORY, UPDATE, CULTURE_CAST, RADIO_QUEUE
@@ -63,6 +69,14 @@ public class ContentItemEntity {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt = Instant.now();
 
+    /**
+     * Returns the audience governing the currently published snapshot (falling back
+     * to `audienceId` only if `publishedAudienceId` was not yet populated).
+     */
+    public String getEffectivePublishedAudienceId() {
+        return publishedAudienceId != null ? publishedAudienceId : audienceId;
+    }
+
     public String getId() { return id; }
     public void setId(String id) { this.id = id; }
 
@@ -71,6 +85,9 @@ public class ContentItemEntity {
 
     public String getAudienceId() { return audienceId; }
     public void setAudienceId(String audienceId) { this.audienceId = audienceId; }
+
+    public String getPublishedAudienceId() { return publishedAudienceId; }
+    public void setPublishedAudienceId(String publishedAudienceId) { this.publishedAudienceId = publishedAudienceId; }
 
     public String getContentType() { return contentType; }
     public void setContentType(String contentType) { this.contentType = contentType; }
