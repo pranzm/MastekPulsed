@@ -129,3 +129,7 @@ npm --prefix web run dev
    - **Expected Result:** Asha disappears from the public **Community Champions** top-5 list (`optInLeaderboard: false`), while her private progress card still displays **`25 / 60 pts`** and her badges. Clicking **Show me on leaderboard** restores her #1 rank.
 6. **Saathi Published-Only Summary:**
    - Click **Ask Saathi Summary** on any published story or update -> returns a grounded summary with source citation and deterministic template fallback.
+
+## Make me Productive addition
+
+Added web prototype in both demo entry points, a four-page proposal addendum (new 23-page PDF), and web/native development plan. Web build and 11 existing browser-engine tests passed in an isolated copy. Headless Chrome checks passed for habit creation/edit/check-in/reload, persona separation, timer completion/pause/breathing phases, 390px width, live privacy gate and standalone navigation. New PDF pages rendered and visually inspected. Backend/private persistence and native productivity screens are not implemented.

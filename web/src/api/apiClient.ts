@@ -10,11 +10,17 @@ import {
   ChallengeEntryDto,
   ConnectionRequestDto,
   ContentCardDto,
+  FocusSessionDto,
+  HabitCheckinDto,
+  HabitSchedule,
   HappenedAnswer,
   LeaderboardResponseDto,
   LeaderboardRowDto,
+  PersonalHabitDto,
   PilotMetricsDto,
   PortalQueueItemDto,
+  ProductivityPreferencesDto,
+  ProductivitySessionKind,
   PulseHttpError,
   RecognitionProgressDto,
   UserProfileDto,
@@ -25,8 +31,9 @@ import {
  * INTERN & AI AGENT GUIDE — WHAT IS THIS FILE?
  * ============================================================================
  * File: web/src/api/apiClient.ts
- * Journey: Explicit Transport Layer (`VITE_APP_MODE=demo|live`) for Mastek Campfire
- *          (Stories CF-002..CF-007, CF-010, CF-011 & Plan Step D1).
+ * Journey: Explicit Dual-Mode Transport Layer (`VITE_APP_MODE=demo|live`) for
+ *          Mastek Campfire (Stories CF-002..CF-007, CF-010, CF-011 & Plan Step D1).
+ *
  * Why it is designed this way:
  *   1. EXPLICIT MODE SELECTION (No Silent Fallback After Live Failure!):
  *      - Configured via `VITE_APP_MODE=demo|live` (defaulting to `'demo'` for
@@ -40,30 +47,53 @@ import {
  *      - Both `live` and `demo` adapters use the exact same 6+ canonical server IDs
  *        so five distinct colleagues can appreciate Asha's story to unlock
  *        `Community Favourite` without mapping by display name.
+ *   3. CONTRACT-IDENTICAL DEMO SIMULATION (`LocalStoreState`):
+ *      - When running in `'demo'` mode, every method enforces the exact same domain
+ *        guardrails as the Java 21 backend: audience-first filtering, capacity locks,
+ *        caller-scoped `Idempotency-Key` conflict checks, `approved_by != author_id`
+ *        self-approval prevention, revision invalidation on edit, bilateral useful
+ *        connection confirmation, and the 720-action AI hard budget cap.
  * ============================================================================
  */
 
+// LocalStorage key used to persist simulated demo state in `'demo'` mode.
 const STORAGE_KEY = 'mastek_pulse_state_v1';
+// SessionStorage key used to persist presenter runtime toggle between `'demo'` and `'live'`.
 const MODE_OVERRIDE_KEY = 'mastek_campfire_mode_override';
 
+// Hydrate any saved runtime transport mode override (`'demo'` or `'live'`) from `sessionStorage`.
 let runtimeModeOverride: AppMode | null = (() => {
   try {
     const saved = sessionStorage.getItem(MODE_OVERRIDE_KEY);
     if (saved === 'demo' || saved === 'live') return saved;
   } catch {
-    // ignore
+    // Ignore storage access errors in restricted/headless environments.
   }
   return null;
 })();
 
+/**
+ * Resolves the active application transport mode (`'demo'` or `'live'`).
+ * Precedence:
+ *   1. Explicit runtime presenter override (`runtimeModeOverride` via `setAppModeOverride`).
+ *   2. Build/dev environment variable `VITE_APP_MODE`.
+ *   3. Default `'demo'` when `VITE_APP_MODE` is unset or empty.
+ * Throws a `500 INVALID_APP_MODE` `PulseHttpError` if `VITE_APP_MODE` contains an invalid string.
+ *
+ * @returns The resolved `AppMode` (`'demo' | 'live'`).
+ */
 export function getAppMode(): AppMode {
+  // 1. Honor explicit presenter switch in the top header bar if set.
   if (runtimeModeOverride) {
     return runtimeModeOverride;
   }
+  // 2. Read Vite environment variable `VITE_APP_MODE`.
   const rawEnv = (import.meta as any).env?.VITE_APP_MODE;
+  // 3. Default to `'demo'` for zero-config static builds.
   if (!rawEnv || rawEnv === '') {
     return 'demo';
   }
+  // 4. Reject unknown mode strings loudly instead of guessing.
   if (rawEnv !== 'demo' && rawEnv !== 'live') {
     throw new PulseHttpError(
       500,
@@ -74,42 +104,63 @@ export function getAppMode(): AppMode {
   return rawEnv;
 }
 
+/**
+ * Sets or clears the runtime transport mode override (`'demo' | 'live' | null`)
+ * and persists the choice in `sessionStorage` for the current browser tab.
+ *
+ * @param mode Target `AppMode` (`'demo'` or `'live'`), or `null` to revert to `VITE_APP_MODE`.
+ */
 export function setAppModeOverride(mode: AppMode | null): void {
   runtimeModeOverride = mode;
   try {
     if (mode) sessionStorage.setItem(MODE_OVERRIDE_KEY, mode);
     else sessionStorage.removeItem(MODE_OVERRIDE_KEY);
   } catch {
-    // ignore
+    // Ignore storage errors in private browsing mode.
   }
 }
 
 /**
- * Performs an authoritative HTTP call to `/api/v1` in `live` mode.
- * Never falls back to local simulation on error!
+ * Performs an authoritative HTTP call to `/api/v1${path}` in `live` mode.
+ * Attaches the simulated authentication header `X-Pulse-User-Id` and parses JSON
+ * responses or `ProblemDetailDto` error bodies.
+ *
+ * CRITICAL INVARIANT (D1): Never falls back to local simulation on network or HTTP error!
+ *
+ * @template T Expected JSON response DTO type.
+ * @param path API endpoint path relative to `/api/v1` (e.g., `'/feed'`, `'/me'`).
+ * @param activeUserId Canonical user ID sent in `X-Pulse-User-Id`.
+ * @param init Optional `fetch` configuration (method, headers, JSON body).
+ * @returns Parsed JSON response of type `T`.
+ * @throws {PulseHttpError} On network unreachability (`status: 0`) or any non-2xx HTTP status.
  */
 async function liveRequest<T>(
   path: string,
   activeUserId: string,
   init?: RequestInit
 ): Promise<T> {
+  // Clone caller-supplied headers so we can safely attach auth and content-type headers.
   const headers: Record<string, string> = {
     ...(init?.headers as Record<string, string>),
   };
+  // Attach the active persona ID header read by Spring Boot's `PulseAuthenticationFilter`.
   if (activeUserId) {
     headers['X-Pulse-User-Id'] = activeUserId;
   }
+  // Default `Content-Type` to `application/json` whenever a request body is present.
   if (init?.body && !headers['Content-Type']) {
     headers['Content-Type'] = 'application/json';
   }
 
   let res: Response;
   try {
+    // Execute the HTTP request against `/api/v1${path}` (proxied to port 8080 in dev).
     res = await fetch(`/api/v1${path}`, {
       ...init,
       headers,
     });
   } catch (err: any) {
+    // Network-level failure (e.g., backend server down): throw status 0 without touching local demo state.
     throw new PulseHttpError(
       0,
       'NETWORK_ERROR',
@@ -117,6 +168,7 @@ async function liveRequest<T>(
     );
   }
 
+  // Handle HTTP 4xx / 5xx responses by extracting `code` and `message` from the JSON problem body.
   if (!res.ok) {
     let code = `HTTP_${res.status}`;
     let message = `HTTP ${res.status} ${res.statusText}`;
@@ -135,53 +187,97 @@ async function liveRequest<T>(
         }
       }
     } catch {
-      // keep default status message
+      // Keep default HTTP status message if error body cannot be parsed.
     }
     throw new PulseHttpError(res.status, code, message);
   }
 
+  // Parse and return the authoritative JSON response payload.
   return (await res.json()) as T;
 }
 
+/**
+ * Internal record tracking a single colleague appreciation in `'demo'` mode.
+ * Snapshots both the actor's and recipient's team names at appreciation time
+ * to mirror the backend `content_appreciations` table.
+ */
 interface DemoAppreciationRecord {
+  /** Unique appreciation ID (`app_...`). */
   id: string;
+  /** User ID of the colleague giving the appreciation. */
   actorId: string;
+  /** Content ID of the published story being appreciated. */
   contentId: string;
+  /** User ID of the story author receiving the appreciation. */
   recipientId: string;
+  /** Monday `YYYY-MM-DD` UTC week key. */
   weekStart: string;
+  /** Department/function of `actorId` when the appreciation was given. */
   actorTeamSnapshot: string;
+  /** Department/function of `recipientId` when the appreciation was given. */
   recipientTeamSnapshot: string;
 }
 
+/**
+ * Complete shape of the in-browser `'demo'` mode store persisted under `STORAGE_KEY`.
+ */
 interface LocalStoreState {
+  /** Seeded pilot personas (`usr_asha`, `usr_daniel`, `usr_priya`, `usr_marcus`, `usr_elena`, `usr_rohan`). */
   users: UserProfileDto[];
+  /** Published and withdrawn stories and company updates. */
   storiesAndUpdates: ContentCardDto[];
+  /** Curated Mastek Radio commute queues. */
   radioQueues: AudioListenItemDto[];
+  /** On-demand Culture Cast podcast episodes. */
   cultureCasts: AudioListenItemDto[];
+  /** Editorial revisions in the Publishing Portal queue. */
   portalItems: PortalQueueItemDto[];
+  /** 15-minute colleague connection requests. */
   requests: ConnectionRequestDto[];
+  /** Nested map `requestId -> userId -> { happened, useful }` for bilateral check-in verification. */
   confirmationsByRequest: Record<string, Record<string, { happened: HappenedAnswer; useful: boolean | null }>>;
+  /** Caller-scoped idempotency map `userId:idempotencyKey -> requestId` for connection requests. */
   idempotencyMap: Record<string, string>;
+  /** Number of optional AI actions consumed in the 4-week pilot simulation. */
   aiActionsUsed: number;
+  /** Hard cap on optional AI actions (720 actions). */
   aiActionCap: number;
+  /** Immutable editorial and security audit log entries. */
   auditLog: AuditEventDto[];
+  /** Map of `userId -> ChallengeEntryDto` for the active Weekly Campfire Challenge. */
   challengeEntriesByUser: Record<string, ChallengeEntryDto>;
+  /** Caller-scoped idempotency hash map `userId:idempotencyKey -> { entryUserId, payloadHash }`. */
   challengeIdempotencyHashes: Record<string, { entryUserId: string; payloadHash: string }>;
+  /** List of colleague appreciations recorded during the current demo week. */
   appreciations: DemoAppreciationRecord[];
+  /** Map of `userId -> true` for users who opted out of public leaderboard display. */
   leaderboardOptOut: Record<string, boolean>;
 }
 
+/**
+ * Synthesizes a valid, playable 16-bit PCM WAV audio data URI (`data:audio/wav;base64,...`)
+ * containing a pleasant A-major chord (`440Hz + 554.37Hz + 659.25Hz`) with a smooth
+ * attack/decay envelope. This allows `<audio>` playback in `'demo'` mode to work
+ * 100% offline without external MP3 dependencies.
+ *
+ * @param seconds Duration of the synthesized WAV clip in seconds (defaults to 6s).
+ * @returns Base64-encoded `data:audio/wav` URI string.
+ */
 function createPlayableWavDataUri(seconds = 6): string {
+  // Use an 8,000 Hz mono 16-bit PCM format for compact in-memory generation.
   const sampleRate = 8000;
   const numSamples = sampleRate * seconds;
   const dataSize = numSamples * 2;
+  // Allocate 44 bytes for the standard RIFF/WAVE header plus `dataSize` bytes for PCM samples.
   const buffer = new ArrayBuffer(44 + dataSize);
   const view = new DataView(buffer);
 
+  // Helper to write ASCII four-character chunk identifiers ('RIFF', 'WAVE', 'fmt ', 'data').
   const writeStr = (offset: number, str: string) => {
     for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
   };
 
+  // Write the 44-byte RIFF WAVE header.
   writeStr(0, 'RIFF');
   view.setUint32(4, 36 + dataSize, true);
   writeStr(8, 'WAVE');
@@ -196,6 +292,7 @@ function createPlayableWavDataUri(seconds = 6): string {
   writeStr(36, 'data');
   view.setUint32(40, dataSize, true);
 
+  // Synthesize warm harmonic sine waves (A4 + C#5 + E5) with a gentle fade envelope.
   for (let i = 0; i < numSamples; i++) {
     const t = i / sampleRate;
     const env = Math.min(1, i / 600) * Math.max(0.2, 1 - t / (seconds + 1.5));
@@ -206,6 +303,7 @@ function createPlayableWavDataUri(seconds = 6): string {
     view.setInt16(44 + i * 2, Math.floor(wave * env * 5500), true);
   }
 
+  // Encode the binary ArrayBuffer as a Base64 data URI.
   const bytes = new Uint8Array(buffer);
   let binary = '';
   for (let i = 0; i < bytes.byteLength; i++) {
@@ -214,9 +312,17 @@ function createPlayableWavDataUri(seconds = 6): string {
   return 'data:audio/wav;base64,' + btoa(binary);
 }
 
+// Pre-generate an 8-second playable WAV data URI shared by demo audio items.
 const DEMO_WAV_URI = createPlayableWavDataUri(8);
+// Authoritative Monday UTC week start date used in `'demo'` mode.
 const DEMO_WEEK_START = '2026-11-16';
 
+/**
+ * Builds the deterministic initial seed state for `'demo'` mode, matching the
+ * Flyway migration seed data (`V2__seed_pilot_data.sql` and `V3__campfire_engagement.sql`).
+ *
+ * @returns Fresh `LocalStoreState` object.
+ */
 function getInitialSeedState(): LocalStoreState {
   const users: UserProfileDto[] = [
     {
@@ -687,37 +793,67 @@ function getInitialSeedState(): LocalStoreState {
   };
 }
 
+/**
+ * Loads the persisted `'demo'` mode state from `localStorage`, or initializes
+ * and saves `getInitialSeedState()` if no valid state exists yet.
+ *
+ * @returns Current `LocalStoreState` snapshot.
+ */
 function loadStore(): LocalStoreState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as LocalStoreState;
+      // Verify that the saved schema includes the Campfire recognition fields before reusing it.
       if (parsed.challengeEntriesByUser && parsed.appreciations) {
         return parsed;
       }
     }
   } catch {
-    // ignore
+    // Ignore storage read or JSON parse errors and fall back to fresh seed state.
   }
   const initial = getInitialSeedState();
   saveStore(initial);
   return initial;
 }
 
+/**
+ * Serializes and writes the given `'demo'` mode `LocalStoreState` into `localStorage`.
+ *
+ * @param state Updated `LocalStoreState` to persist.
+ */
 function saveStore(state: LocalStoreState) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   } catch {
-    // ignore
+    // Ignore quota or private-browsing storage errors.
   }
 }
 
+/**
+ * Resets the `'demo'` mode `localStorage` state back to the clean initial pilot seed data.
+ * Invoked by the "Reset Demo" button in the top header bar and by automated tests.
+ *
+ * @returns Freshly initialized `LocalStoreState`.
+ */
 export function resetDemoState(): LocalStoreState {
   const fresh = getInitialSeedState();
   saveStore(fresh);
   return fresh;
 }
 
+/**
+ * Computes the bilateral verification outcome for an accepted 15-minute connection request.
+ * Domain Guardrail (Proposal Page 8 & Page 12):
+ *   A connection is counted as `USEFUL_CONFIRMED` ONLY when BOTH the requester and the
+ *   host independently submit `happened === 'YES'` and `useful === true`.
+ *   Missing, skipped, or `'NOT_YET'` feedback from either side remains `'UNKNOWN'`.
+ *
+ * @param confs Map of `userId -> { happened, useful }` confirmations for the request.
+ * @param requesterId User ID of the colleague who sent the invitation request.
+ * @param hostId User ID of the story host who accepted the request.
+ * @returns Computed `BilateralOutcome` (`'USEFUL_CONFIRMED' | 'NOT_USEFUL' | 'NOT_HAPPENED' | 'UNKNOWN'`).
+ */
 function computeBilateralOutcome(
   confs: Record<string, { happened: HappenedAnswer; useful: boolean | null }> | undefined,
   requesterId: string,
@@ -726,23 +862,44 @@ function computeBilateralOutcome(
   if (!confs) return 'UNKNOWN';
   const r = confs[requesterId];
   const h = confs[hostId];
+  // If either participant has not yet submitted feedback, the outcome stays UNKNOWN.
   if (!r || !h) return 'UNKNOWN';
+  // If either participant answered NOT_YET, the outcome stays UNKNOWN.
   if (r.happened === 'NOT_YET' || h.happened === 'NOT_YET') return 'UNKNOWN';
+  // If either participant reported the conversation did not happen, mark NOT_HAPPENED.
   if (r.happened === 'NO' || h.happened === 'NO') return 'NOT_HAPPENED';
+  // Both confirmed Happened=YES and Useful=true -> verified Useful Connection!
   if (r.happened === 'YES' && r.useful === true && h.happened === 'YES' && h.useful === true) {
     return 'USEFUL_CONFIRMED';
   }
   return 'NOT_USEFUL';
 }
 
+/**
+ * Computes weekly Campfire recognition points and milestone badges for `userId` in `'demo'` mode.
+ * Mirrors the backend `CampfireService.computeProgress()` rules (CF-004, CF-005, CF-006):
+ *   - Only currently `PUBLISHED` stories in `aud_pilot` count toward contribution or appreciation points.
+ *   - `+20` contribution points once per week when the user has a `PUBLISHED` story (`First Spark`).
+ *   - `+5` giving points per published story appreciated, capped at 3 stories (`+15` max).
+ *     Supporting 3 distinct recipient teams unlocks `Connection Maker`.
+ *   - `+5` receiving points per distinct colleague who appreciated the user's published stories,
+ *     capped at 5 colleagues (`+25` max). Receiving from 5 distinct colleagues unlocks `Community Favourite`.
+ *   - Total weekly points are capped at `60`.
+ *
+ * @param store Current `LocalStoreState`.
+ * @param userId Canonical user ID (`usr_asha`, `usr_daniel`, etc.).
+ * @returns Computed `RecognitionProgressDto`.
+ */
 function computeDemoRecognitionProgress(store: LocalStoreState, userId: string): RecognitionProgressDto {
   const user = store.users.find((u) => u.id === userId) || store.users[0];
+  // Collect IDs of all currently PUBLISHED stories in the pilot audience.
   const publishedStoryIds = new Set(
     store.storiesAndUpdates
       .filter((s) => s.status === 'PUBLISHED' && s.contentType === 'STORY' && s.audienceId === 'aud_pilot')
       .map((s) => s.id)
   );
 
+  // Check if the user has a PUBLISHED challenge entry or story in `aud_pilot`.
   const entry = store.challengeEntriesByUser[userId];
   const hasPublishedChallengeStory =
     (entry && entry.status === 'PUBLISHED' && publishedStoryIds.has(entry.contentId)) ||
@@ -751,18 +908,21 @@ function computeDemoRecognitionProgress(store: LocalStoreState, userId: string):
     );
   const contributionPoints = hasPublishedChallengeStory ? 20 : 0;
 
+  // Count appreciations given by `userId` to currently PUBLISHED stories (capped at 3 * 5 = 15 pts).
   const given = store.appreciations.filter(
     (a) => a.actorId === userId && publishedStoryIds.has(a.contentId)
   );
   const givingPoints = Math.min(3, given.length) * 5;
   const distinctTeamsSupported = new Set(given.map((a) => a.recipientTeamSnapshot)).size;
 
+  // Count distinct colleagues who appreciated `userId`'s currently PUBLISHED stories (capped at 5 * 5 = 25 pts).
   const received = store.appreciations.filter(
     (a) => a.recipientId === userId && publishedStoryIds.has(a.contentId)
   );
   const receivedDistinctCount = new Set(received.map((a) => a.actorId)).size;
   const receivingPoints = Math.min(5, receivedDistinctCount) * 5;
 
+  // Evaluate milestone badge unlock conditions.
   const badges: string[] = [];
   if (contributionPoints >= 20) badges.push('First Spark');
   if (distinctTeamsSupported >= 3) badges.push('Connection Maker');
@@ -785,7 +945,17 @@ function computeDemoRecognitionProgress(store: LocalStoreState, userId: string):
   };
 }
 
+/**
+ * Unified API client for Mastek Campfire.
+ * Every method checks `getAppMode()` first:
+ *   - When `'live'`, delegates to `liveRequest('/...', activeUserId)` against the Spring Boot backend.
+ *   - When `'demo'`, executes the contract-identical in-browser simulation against `LocalStoreState`.
+ */
 export const pulseApi = {
+  /**
+   * Lists all canonical pilot personas (`GET /api/v1/personas`).
+   * @param activeUserId Current caller's user ID.
+   */
   async getPersonas(activeUserId: string): Promise<UserProfileDto[]> {
     if (getAppMode() === 'live') {
       return liveRequest<UserProfileDto[]>('/personas', activeUserId);
@@ -793,6 +963,11 @@ export const pulseApi = {
     return loadStore().users;
   },
 
+  /**
+   * Fetches the authenticated profile for `activeUserId` (`GET /api/v1/me`).
+   * Throws `401 UNAUTHORIZED` if `activeUserId` is unknown.
+   * @param activeUserId Current caller's user ID.
+   */
   async getCurrentUser(activeUserId: string): Promise<UserProfileDto> {
     if (getAppMode() === 'live') {
       return liveRequest<UserProfileDto>('/me', activeUserId);
@@ -805,6 +980,12 @@ export const pulseApi = {
     return found;
   },
 
+  /**
+   * Updates the caller's explicit interests, notification frequency, or host pause toggle
+   * (`PATCH /api/v1/me/preferences`).
+   * @param activeUserId Current caller's user ID.
+   * @param prefs Partial preference fields to update.
+   */
   async updatePreferences(
     activeUserId: string,
     prefs: { interests?: string[]; notificationFrequency?: string; hostPaused?: boolean }
@@ -824,6 +1005,16 @@ export const pulseApi = {
     return user;
   },
 
+  /**
+   * Fetches the audience-filtered and interest-ranked Employee Feed (`GET /api/v1/feed`).
+   * Domain Guardrail #1: Filters by `caller.audiences.includes(item.audienceId)` BEFORE
+   * ranking by explicit `caller.interests` and open invitation capacity, and generates
+   * a grounded `WHY THIS?` `factualExplanation` badge for every card.
+   *
+   * @param activeUserId Current caller's user ID.
+   * @param category Optional category filter (`'FOR_YOU' | 'LEARNING' | 'COMMUNITY' | 'UPDATES'`).
+   * @param query Optional search query string.
+   */
   async getFeed(activeUserId: string, category = 'FOR_YOU', query = ''): Promise<ContentCardDto[]> {
     if (getAppMode() === 'live') {
       const params = new URLSearchParams();
@@ -834,10 +1025,12 @@ export const pulseApi = {
     const store = loadStore();
     const caller = store.users.find((u) => u.id === activeUserId) || store.users[0];
 
+    // GUARDRAIL 1: Filter by `PUBLISHED` status and permitted `audienceId` FIRST!
     let items = store.storiesAndUpdates.filter(
       (item) => item.status === 'PUBLISHED' && caller.audiences.includes(item.audienceId)
     );
 
+    // Apply optional category tab filter.
     if (category === 'LEARNING') {
       items = items.filter(
         (i) => i.contentType === 'STORY' && (i.tags.includes('team learning') || i.tags.includes('delivery excellence'))
@@ -850,6 +1043,7 @@ export const pulseApi = {
       items = items.filter((i) => i.contentType === 'UPDATE');
     }
 
+    // Apply optional keyword search filter across title, summary, and tags.
     if (query.trim()) {
       const q = query.trim().toLowerCase();
       items = items.filter(
@@ -860,6 +1054,7 @@ export const pulseApi = {
       );
     }
 
+    // Rank permitted items by explicit interest overlap and open invitation availability.
     return items
       .map((item) => {
         const matched = item.tags.filter((t) =>
@@ -873,6 +1068,7 @@ export const pulseApi = {
           inv.remainingPlaces = Math.max(0, inv.capacity - inv.acceptedCount);
           inv.statusLabel = inv.paused ? 'PAUSED' : inv.remainingPlaces === 0 ? 'FULL' : 'OPEN';
         }
+        // Build grounded factual explanation badge (never an opaque compatibility percentage).
         let reason = 'WHY THIS? ';
         if (matched.length > 0) {
           reason += `Your interest: ${matched.join(', ')}`;
@@ -900,6 +1096,10 @@ export const pulseApi = {
       .map((x) => x.card);
   },
 
+  /**
+   * Fetches the active Weekly Campfire Challenge and the caller's own entry (`GET /api/v1/challenges/current`).
+   * @param activeUserId Current caller's user ID.
+   */
   async getCurrentChallenge(activeUserId: string): Promise<ChallengeDto> {
     if (getAppMode() === 'live') {
       return liveRequest<ChallengeDto>('/challenges/current', activeUserId);
@@ -920,6 +1120,20 @@ export const pulseApi = {
     };
   },
 
+  /**
+   * Submits or resubmits a Weekly Campfire Challenge story (`POST /api/v1/challenges/{id}/entries`).
+   * Enforces:
+   *   - `CREATOR` role check (`403 FORBIDDEN_ACCESS`).
+   *   - Title (5–100 chars) and body (30–1,200 chars) length validation (`422 VALIDATION_FAILED`).
+   *   - Caller-scoped `Idempotency-Key` with payload hash conflict detection (`409 IDEMPOTENCY_CONFLICT`).
+   *   - One challenge story per person per week unless resubmitting a `DRAFT` (`409 DUPLICATE_ENTRY`).
+   *   - Awards `0` points on submission (+20 unlocks only after human review and publication).
+   *
+   * @param activeUserId Current caller's user ID.
+   * @param challengeId Target weekly challenge ID (`'ch_beyond_01'`).
+   * @param idempotencyKey Caller-supplied `Idempotency-Key` header value.
+   * @param payload Story title, body text, and `submitForReview` flag.
+   */
   async submitChallengeEntry(
     activeUserId: string,
     challengeId: string,
@@ -948,6 +1162,7 @@ export const pulseApi = {
       throw new PulseHttpError(422, 'VALIDATION_FAILED', '422: Story body must be between 30 and 1,200 characters.');
     }
 
+    // Check caller-scoped Idempotency-Key and detect payload mismatches.
     const scopedKey = `${activeUserId}:${idempotencyKey}`;
     const payloadHash = `${title}|${bodyText}|${payload.submitForReview ?? true}`;
     const prevIdem = store.challengeIdempotencyHashes[scopedKey];
@@ -962,6 +1177,7 @@ export const pulseApi = {
       return store.challengeEntriesByUser[activeUserId];
     }
 
+    // Enforce one active story per person per week (resubmission allowed only when returned to DRAFT).
     const existing = store.challengeEntriesByUser[activeUserId];
     if (existing && existing.status !== 'DRAFT') {
       throw new PulseHttpError(
@@ -993,6 +1209,7 @@ export const pulseApi = {
     store.challengeEntriesByUser[activeUserId] = entry;
     store.challengeIdempotencyHashes[scopedKey] = { entryUserId: activeUserId, payloadHash };
 
+    // Upsert corresponding item in the Publishing Portal review queue so Priya can review it.
     const portalItem: PortalQueueItemDto = {
       id: contentId,
       revisionId: `rev_${contentId}_v${nextRevision}`,
@@ -1025,6 +1242,17 @@ export const pulseApi = {
     return entry;
   },
 
+  /**
+   * Records a colleague appreciation on a `PUBLISHED` story (`POST /api/v1/content/{id}/appreciations`).
+   * Enforces:
+   *   - Target story must be `PUBLISHED` (`404 RESOURCE_NOT_FOUND`).
+   *   - Caller must belong to `story.audienceId` (`403 FORBIDDEN_ACCESS`).
+   *   - Self-appreciation is rejected (`422 VALIDATION_FAILED`).
+   *   - Duplicate appreciation is idempotent (`alreadyAppreciated: true`, `0` delta points).
+   *
+   * @param activeUserId Current caller's user ID.
+   * @param contentId ID of the published story being appreciated.
+   */
   async appreciateStory(activeUserId: string, contentId: string): Promise<AppreciationResultDto> {
     if (getAppMode() === 'live') {
       return liveRequest<AppreciationResultDto>(`/content/${contentId}/appreciations`, activeUserId, {
@@ -1047,6 +1275,7 @@ export const pulseApi = {
       throw new PulseHttpError(422, 'VALIDATION_FAILED', '422: Self-appreciation is disallowed.');
     }
 
+    // Idempotent duplicate check: return existing appreciation record with 0 point delta.
     const existing = store.appreciations.find((a) => a.actorId === caller.id && a.contentId === contentId);
     if (existing) {
       return {
@@ -1093,6 +1322,11 @@ export const pulseApi = {
     };
   },
 
+  /**
+   * Fetches the caller's weekly recognition points and unlocked badges (`GET /api/v1/recognition/me`).
+   * @param activeUserId Current caller's user ID.
+   * @param week Optional Monday `YYYY-MM-DD` UTC week key.
+   */
   async getMyRecognitionProgress(activeUserId: string, week?: string): Promise<RecognitionProgressDto> {
     if (getAppMode() === 'live') {
       const qs = week ? `?week=${encodeURIComponent(week)}` : '';
@@ -1101,6 +1335,14 @@ export const pulseApi = {
     return computeDemoRecognitionProgress(loadStore(), activeUserId);
   },
 
+  /**
+   * Fetches the Top 5 optional Community Champions leaderboard (`GET /api/v1/recognition/leaderboard`).
+   * Excludes opted-out users (`leaderboardOptOut`) and assigns shared competition ranks on ties.
+   *
+   * @param activeUserId Current caller's user ID.
+   * @param audienceId Target audience ID (defaults to `'aud_pilot'`).
+   * @param week Optional Monday `YYYY-MM-DD` UTC week key.
+   */
   async getLeaderboard(activeUserId: string, audienceId = 'aud_pilot', week?: string): Promise<LeaderboardResponseDto> {
     if (getAppMode() === 'live') {
       const params = new URLSearchParams({ audienceId });
@@ -1113,6 +1355,7 @@ export const pulseApi = {
       throw new PulseHttpError(403, 'FORBIDDEN_ACCESS', `403: Access denied to audience ${audienceId}`);
     }
 
+    // Filter to audience members who have NOT opted out of the public leaderboard.
     const candidates = store.users
       .filter((u) => u.audiences.includes(audienceId) && !store.leaderboardOptOut[u.id])
       .map((u) => {
@@ -1121,6 +1364,7 @@ export const pulseApi = {
       })
       .sort((a, b) => b.points - a.points || a.user.displayName.localeCompare(b.user.displayName));
 
+    // Build Top 5 rows with standard competition ranking (ties share the same rank number).
     const entries: LeaderboardRowDto[] = [];
     let currentRank = 1;
     for (let i = 0; i < Math.min(5, candidates.length); i++) {
@@ -1146,6 +1390,13 @@ export const pulseApi = {
     };
   },
 
+  /**
+   * Updates whether the caller's name appears on the public Top 5 leaderboard
+   * (`PUT /api/v1/recognition/preferences`). Private points and badges remain intact.
+   *
+   * @param activeUserId Current caller's user ID.
+   * @param showOnLeaderboard `true` to appear on the public leaderboard; `false` to opt out.
+   */
   async updateRecognitionPreferences(
     activeUserId: string,
     showOnLeaderboard: boolean
@@ -1162,6 +1413,10 @@ export const pulseApi = {
     return computeDemoRecognitionProgress(store, activeUserId);
   },
 
+  /**
+   * Lists curated Mastek Radio commute queues (`GET /api/v1/listen/radio`).
+   * @param activeUserId Current caller's user ID.
+   */
   async getRadioQueues(activeUserId: string): Promise<AudioListenItemDto[]> {
     if (getAppMode() === 'live') {
       return liveRequest<AudioListenItemDto[]>('/listen/radio', activeUserId);
@@ -1169,6 +1424,10 @@ export const pulseApi = {
     return loadStore().radioQueues;
   },
 
+  /**
+   * Lists on-demand Culture Cast episodes (`GET /api/v1/listen/culture-cast`).
+   * @param activeUserId Current caller's user ID.
+   */
   async getCultureCasts(activeUserId: string): Promise<AudioListenItemDto[]> {
     if (getAppMode() === 'live') {
       return liveRequest<AudioListenItemDto[]>('/listen/culture-cast', activeUserId);
@@ -1176,6 +1435,15 @@ export const pulseApi = {
     return loadStore().cultureCasts;
   },
 
+  /**
+   * Saves the caller's audio playback position in seconds for cross-device resume
+   * (`PUT /api/v1/listen/progress`).
+   *
+   * @param activeUserId Current caller's user ID.
+   * @param contentId Audio item ID (`rad_commute_01`, `cc_ep_03`, etc.).
+   * @param positionSeconds Current playback offset in seconds.
+   * @param durationSeconds Total track duration in seconds.
+   */
   async savePlaybackProgress(
     activeUserId: string,
     contentId: string,
@@ -1197,6 +1465,13 @@ export const pulseApi = {
     saveStore(store);
   },
 
+  /**
+   * Lists all 15-minute connection requests where `activeUserId` is either the
+   * requester or the host (`GET /api/v1/requests`), enriched with bilateral
+   * check-in outcome status.
+   *
+   * @param activeUserId Current caller's user ID.
+   */
   async listRequests(activeUserId: string): Promise<ConnectionRequestDto[]> {
     if (getAppMode() === 'live') {
       return liveRequest<ConnectionRequestDto[]>('/requests', activeUserId);
@@ -1215,6 +1490,17 @@ export const pulseApi = {
       });
   },
 
+  /**
+   * Sends a new 15-minute connection request (`POST /api/v1/requests`).
+   * Domain Guardrail #3: Enforces a caller-scoped `Idempotency-Key` so retrying
+   * a request returns the existing `ConnectionRequestDto` instead of creating
+   * duplicate requests, and validates that `acceptedCount < capacity` and
+   * `hostId !== caller.id`.
+   *
+   * @param activeUserId Current caller's user ID.
+   * @param idempotencyKey Caller-supplied `Idempotency-Key` header.
+   * @param payload Target `invitationId`, personal `messageText`, and `aiAssisted` flag.
+   */
   async sendInvitationRequest(
     activeUserId: string,
     idempotencyKey: string,
@@ -1229,6 +1515,7 @@ export const pulseApi = {
     }
 
     const store = loadStore();
+    // Enforce caller-scoped Idempotency-Key to make network retries 100% safe.
     const idemScopedKey = `${activeUserId}:${idempotencyKey}`;
     if (store.idempotencyMap[idemScopedKey]) {
       const existing = store.requests.find((r) => r.id === store.idempotencyMap[idemScopedKey]);
@@ -1287,6 +1574,17 @@ export const pulseApi = {
     return newReq;
   },
 
+  /**
+   * Transitions a `PENDING` connection request to `'ACCEPTED'`, `'DECLINED'`, or `'CANCELLED'`
+   * (`PATCH /api/v1/requests/{id}`).
+   * Domain Guardrail #2: Simulates pessimistic row locking (`SELECT ... FOR UPDATE`) and
+   * optimistic version checking (`expectedVersion`) so `acceptedCount` never exceeds `capacity`.
+   *
+   * @param activeUserId Current caller's user ID.
+   * @param requestId Target connection request ID.
+   * @param targetState Desired state (`'ACCEPTED' | 'DECLINED' | 'CANCELLED'`).
+   * @param expectedVersion Optimistic concurrency version number.
+   */
   async updateRequestState(
     activeUserId: string,
     requestId: string,
@@ -1321,6 +1619,7 @@ export const pulseApi = {
       if (!inv || inv.acceptedCount >= inv.capacity) {
         throw new PulseHttpError(409, 'CAPACITY_FULL', '409: Full capacity reached — no remaining places this week.');
       }
+      // Increment accepted count and recompute remaining places atomically.
       inv.acceptedCount += 1;
       inv.remainingPlaces = Math.max(0, inv.capacity - inv.acceptedCount);
       inv.statusLabel = inv.remainingPlaces === 0 ? 'FULL' : 'OPEN';
@@ -1347,6 +1646,15 @@ export const pulseApi = {
     return req;
   },
 
+  /**
+   * Submits a participant's private follow-up check-in (`POST /api/v1/requests/{id}/confirmations`).
+   * Recomputes `bilateralOutcome` (`USEFUL_CONFIRMED` only when both requester and host confirm Yes + Yes).
+   *
+   * @param activeUserId Current caller's user ID (must be either requester or host).
+   * @param requestId Target accepted connection request ID.
+   * @param happened `'YES' | 'NO' | 'NOT_YET'`.
+   * @param useful `true | false | null` (applicable when `happened === 'YES'`).
+   */
   async submitConfirmation(
     activeUserId: string,
     requestId: string,
@@ -1381,6 +1689,20 @@ export const pulseApi = {
     return req;
   },
 
+  /**
+   * Requests optional AI drafting, story polishing, or update summarization (`POST /api/v1/ai/assist`).
+   * Domain Guardrail #5:
+   *   - Refuses prompts asking for appraisal scores, employee rankings, salaries, or private messages (`422`).
+   *   - Verifies audience membership on the referenced `contextId` story (`403`).
+   *   - Checks the 720-action hard budget cap (`store.aiActionsUsed >= store.aiActionCap`); when capped,
+   *     automatically disables AI (`aiAvailable: false`, `aiSuggestion: null`) and returns the
+   *     deterministic `templateFallback`.
+   *
+   * @param activeUserId Current caller's user ID.
+   * @param assistType `'INVITATION_DRAFT' | 'STORY_POLISH' | 'UPDATE_SUMMARY'`.
+   * @param contextId Referenced story or update ID.
+   * @param userDraftText Optional user-supplied draft text.
+   */
   async requestAiAssist(
     activeUserId: string,
     assistType: 'INVITATION_DRAFT' | 'STORY_POLISH' | 'UPDATE_SUMMARY',
@@ -1398,6 +1720,7 @@ export const pulseApi = {
     const caller = store.users.find((u) => u.id === activeUserId) || store.users[0];
     const story = store.storiesAndUpdates.find((s) => s.id === contextId);
 
+    // Trust policy guardrail: refuse sensitive HR/appraisal/surveillance prompts.
     const lower = userDraftText.toLowerCase();
     if (
       lower.includes('appraisal score') ||
@@ -1412,6 +1735,7 @@ export const pulseApi = {
       );
     }
 
+    // Audience access check on the context story.
     if (story && !caller.audiences.includes(story.audienceId)) {
       throw new PulseHttpError(403, 'FORBIDDEN_ACCESS', '403: Access denied to restricted audience content.');
     }
@@ -1423,6 +1747,7 @@ export const pulseApi = {
     let templateFallback = '';
     let aiSuggestion = '';
 
+    // Construct both the grounded AI suggestion and the mandatory deterministic non-AI template fallback.
     if (assistType === 'INVITATION_DRAFT') {
       templateFallback = `Hi ${hostFirstName}, I read your story "${title}" and would love to have a 15-minute conversation to learn from your experience. Could we compare notes this week?`;
       aiSuggestion = `Hi ${hostFirstName}, I would love to learn how you made retrospectives more inclusive in "${title}". As a colleague interested in ${caller.interests
@@ -1442,6 +1767,7 @@ export const pulseApi = {
       }\n\nWhat we learned: Quieter voices contributed concrete ideas immediately, and our retrospective stayed focused and actionable.`;
     }
 
+    // Enforce the 720-action hard budget cap.
     const capReached = store.aiActionsUsed >= store.aiActionCap;
     if (!capReached) {
       store.aiActionsUsed += 1;
@@ -1479,6 +1805,13 @@ export const pulseApi = {
     };
   },
 
+  /**
+   * Creates a new colleague story contribution (`POST /api/v1/content`) and places
+   * Revision 1 into `IN_REVIEW` (or `DRAFT` if `submitForReview` is false).
+   *
+   * @param activeUserId Current caller's user ID.
+   * @param payload Story title, body text, audience ID, and optional 15-minute invitation settings.
+   */
   async createContribution(
     activeUserId: string,
     payload: {
@@ -1534,6 +1867,12 @@ export const pulseApi = {
     return newItem;
   },
 
+  /**
+   * Lists editorial revisions in the Publishing Portal queue (`GET /api/v1/portal/queue`).
+   * Requires a scoped portal role (`REVIEWER`, `PUBLISHER`, `MODERATOR`, or `ADMIN`).
+   *
+   * @param activeUserId Current caller's user ID.
+   */
   async getPortalQueue(activeUserId: string): Promise<PortalQueueItemDto[]> {
     if (getAppMode() === 'live') {
       return liveRequest<PortalQueueItemDto[]>('/portal/queue', activeUserId);
@@ -1556,6 +1895,20 @@ export const pulseApi = {
     return store.portalItems.filter((item) => caller.audiences.includes(item.audienceId));
   },
 
+  /**
+   * Approves or requests changes on a specific `revisionNumber` in the Publishing Portal
+   * (`POST /api/v1/content/{id}/review`).
+   * Domain Guardrail #4:
+   *   - Requires `REVIEWER` role (`403 FORBIDDEN_ACCESS` — note that `ADMIN` has no automatic approval right!).
+   *   - Enforces `item.authorId !== caller.id` (`403 SELF_APPROVAL_DENIED`).
+   *   - Verifies that `item.currentVersion === revisionNumber` and `status === 'IN_REVIEW'` (`409 STALE_VERSION`).
+   *
+   * @param activeUserId Current caller's user ID.
+   * @param contentId Target content item ID.
+   * @param revisionNumber Exact revision number being reviewed.
+   * @param decision `'APPROVE'` or `'REQUEST_CHANGES'`.
+   * @param notes Reviewer feedback notes.
+   */
   async reviewRevision(
     activeUserId: string,
     contentId: string,
@@ -1607,6 +1960,7 @@ export const pulseApi = {
     }
     item.updatedAt = new Date().toISOString();
 
+    // Synchronize status and reviewer notes if this item backs a Weekly Challenge entry.
     const chEntry = store.challengeEntriesByUser[item.authorId];
     if (chEntry && chEntry.contentId === item.id) {
       chEntry.status = item.status;
@@ -1617,6 +1971,17 @@ export const pulseApi = {
     return item;
   },
 
+  /**
+   * Publishes or schedules an `APPROVED` revision (`POST /api/v1/content/{id}/publish`).
+   * Requires `PUBLISHER` role (`403 FORBIDDEN_ACCESS`) and an `APPROVED` status (`409 STALE_VERSION`).
+   * When published immediately, inserts/updates the live `ContentCardDto` in `storiesAndUpdates`
+   * and awards `+20` points if the item is a Weekly Challenge entry.
+   *
+   * @param activeUserId Current caller's user ID.
+   * @param contentId Target content item ID.
+   * @param mode `'IMMEDIATE' | 'SCHEDULED'`.
+   * @param scheduledFor Optional ISO-8601 UTC timestamp for `'SCHEDULED'` release.
+   */
   async publishOrSchedule(
     activeUserId: string,
     contentId: string,
@@ -1684,6 +2049,7 @@ export const pulseApi = {
       if (existingFeedIdx >= 0) store.storiesAndUpdates[existingFeedIdx] = liveCard;
       else if (item.contentType === 'STORY' || item.contentType === 'UPDATE') store.storiesAndUpdates.unshift(liveCard);
 
+      // Award +20 contribution points when a Weekly Challenge story is published.
       const chEntry = store.challengeEntriesByUser[item.authorId];
       if (chEntry && chEntry.contentId === item.id) {
         chEntry.status = 'PUBLISHED';
@@ -1696,6 +2062,18 @@ export const pulseApi = {
     return item;
   },
 
+  /**
+   * Edits a portal item's title, body, or audience (`PUT /api/v1/content/{id}/revisions`).
+   * Domain Guardrail #4 (Proposal Page 11): Editing content or audience after approval
+   * increments `currentVersion` (`Revision N+1`), clears `approvedBy`, and resets
+   * `status` back to `'IN_REVIEW'`.
+   *
+   * @param activeUserId Current caller's user ID.
+   * @param contentId Target content item ID.
+   * @param newTitle Updated headline title.
+   * @param newBody Updated body text.
+   * @param newAudienceId Updated target audience ID.
+   */
   async editPortalItemAndInvalidateApproval(
     activeUserId: string,
     contentId: string,
@@ -1730,6 +2108,15 @@ export const pulseApi = {
     return item;
   },
 
+  /**
+   * Withdraws a published content item (`POST /api/v1/content/{id}/withdraw`).
+   * Requires `PUBLISHER` or `MODERATOR` role (`403 FORBIDDEN_ACCESS`).
+   * Removes the item from active feeds and reverses any Weekly Challenge points tied to it.
+   *
+   * @param activeUserId Current caller's user ID.
+   * @param contentId Target content item ID.
+   * @param reason Audit reason for withdrawal.
+   */
   async withdrawContent(activeUserId: string, contentId: string, reason: string): Promise<PortalQueueItemDto> {
     if (getAppMode() === 'live') {
       return liveRequest<PortalQueueItemDto>(`/content/${contentId}/withdraw`, activeUserId, {
@@ -1768,6 +2155,12 @@ export const pulseApi = {
     return item;
   },
 
+  /**
+   * Fetches the immutable editorial and security audit log (`GET /api/v1/portal/audit-log`).
+   * Requires a scoped portal role (`403 FORBIDDEN_ACCESS`).
+   *
+   * @param activeUserId Current caller's user ID.
+   */
   async getAuditLog(activeUserId: string): Promise<AuditEventDto[]> {
     if (getAppMode() === 'live') {
       return liveRequest<AuditEventDto[]>('/portal/audit-log', activeUserId);
@@ -1786,6 +2179,12 @@ export const pulseApi = {
     return store.auditLog;
   },
 
+  /**
+   * Fetches the 4-week Pilot Threshold Gate metrics (`/api/v1/pilot/metrics`) and
+   * AI Budget status (`/api/v1/ai/budget`) for the Publishing Portal Dashboard.
+   *
+   * @param activeUserId Current caller's user ID.
+   */
   async getPilotMetricsAndBudget(
     activeUserId: string
   ): Promise<{ metrics: PilotMetricsDto; budget: AiBudgetStatusDto }> {
@@ -1849,6 +2248,13 @@ export const pulseApi = {
     };
   },
 
+  /**
+   * Simulates different AI budget threshold levels (`NORMAL`, `ALERT_50`, `ALERT_80`, `CAPPED_100`)
+   * so judges and developers can test automatic AI disablement and non-AI template fallback at 100% cap.
+   *
+   * @param activeUserId Current caller's user ID.
+   * @param level Target budget alert level to simulate.
+   */
   async simulateAiBudgetLevel(
     activeUserId: string,
     level: 'NORMAL' | 'ALERT_50' | 'ALERT_80' | 'CAPPED_100'
@@ -1867,5 +2273,236 @@ export const pulseApi = {
     else if (level === 'ALERT_80') store.aiActionsUsed = 585;
     else if (level === 'CAPPED_100') store.aiActionsUsed = 720;
     saveStore(store);
+  },
+
+  // =========================================================================
+  // SECTION 14: MAKE ME PRODUCTIVE (MP-04 / MP-05 — Demo & Java Live Mode)
+  // =========================================================================
+
+  async listProductivityHabits(activeUserId: string): Promise<PersonalHabitDto[]> {
+    if (getAppMode() === 'live') {
+      return liveRequest<PersonalHabitDto[]>('/me/productivity/habits', activeUserId);
+    }
+    const raw = sessionStorage.getItem(`campfire_prod_demo_${activeUserId}`);
+    if (!raw) return [];
+    try {
+      return JSON.parse(raw).habits || [];
+    } catch {
+      return [];
+    }
+  },
+
+  async createProductivityHabit(
+    activeUserId: string,
+    idempotencyKey: string,
+    payload: { name: string; schedule: HabitSchedule; timezone: string }
+  ): Promise<PersonalHabitDto> {
+    if (getAppMode() === 'live') {
+      return liveRequest<PersonalHabitDto>('/me/productivity/habits', activeUserId, {
+        method: 'POST',
+        headers: { 'Idempotency-Key': idempotencyKey },
+        body: JSON.stringify(payload),
+      });
+    }
+    const key = `campfire_prod_demo_${activeUserId}`;
+    const state = (() => {
+      try {
+        return JSON.parse(sessionStorage.getItem(key) || '{}');
+      } catch {
+        return {};
+      }
+    })();
+    const habits: PersonalHabitDto[] = Array.isArray(state.habits) ? state.habits : [];
+    const now = new Date().toISOString();
+    const created: PersonalHabitDto = {
+      id: `hab_${Math.random().toString(36).slice(2, 10)}`,
+      name: payload.name.trim(),
+      schedule: payload.schedule,
+      timezone: payload.timezone || 'UTC',
+      version: 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+    habits.push(created);
+    sessionStorage.setItem(key, JSON.stringify({ ...state, habits }));
+    return created;
+  },
+
+  async updateProductivityHabit(
+    activeUserId: string,
+    habitId: string,
+    payload: { name?: string; schedule?: HabitSchedule; expectedVersion: number }
+  ): Promise<PersonalHabitDto> {
+    if (getAppMode() === 'live') {
+      return liveRequest<PersonalHabitDto>(`/me/productivity/habits/${habitId}`, activeUserId, {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      });
+    }
+    const key = `campfire_prod_demo_${activeUserId}`;
+    const state = JSON.parse(sessionStorage.getItem(key) || '{}');
+    const habits: PersonalHabitDto[] = Array.isArray(state.habits) ? state.habits : [];
+    const idx = habits.findIndex((h) => h.id === habitId);
+    if (idx < 0) throw new PulseHttpError(404, 'RESOURCE_NOT_FOUND', 'Habit not found');
+    const updated: PersonalHabitDto = {
+      ...habits[idx],
+      name: payload.name !== undefined ? payload.name.trim() : habits[idx].name,
+      schedule: payload.schedule !== undefined ? payload.schedule : habits[idx].schedule,
+      version: habits[idx].version + 1,
+      updatedAt: new Date().toISOString(),
+    };
+    habits[idx] = updated;
+    sessionStorage.setItem(key, JSON.stringify({ ...state, habits }));
+    return updated;
+  },
+
+  async deleteProductivityHabit(activeUserId: string, habitId: string): Promise<void> {
+    if (getAppMode() === 'live') {
+      await liveRequest<unknown>(`/me/productivity/habits/${habitId}`, activeUserId, {
+        method: 'DELETE',
+      });
+      return;
+    }
+    const key = `campfire_prod_demo_${activeUserId}`;
+    const state = JSON.parse(sessionStorage.getItem(key) || '{}');
+    const habits: PersonalHabitDto[] = (state.habits || []).filter((h: PersonalHabitDto) => h.id !== habitId);
+    const checkins: HabitCheckinDto[] = (state.checkins || []).filter((c: HabitCheckinDto) => c.habitId !== habitId);
+    sessionStorage.setItem(key, JSON.stringify({ ...state, habits, checkins }));
+  },
+
+  async listProductivityCheckins(
+    activeUserId: string,
+    from: string,
+    to: string
+  ): Promise<HabitCheckinDto[]> {
+    if (getAppMode() === 'live') {
+      return liveRequest<HabitCheckinDto[]>(
+        `/me/productivity/checkins?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+        activeUserId
+      );
+    }
+    const raw = sessionStorage.getItem(`campfire_prod_demo_${activeUserId}`);
+    if (!raw) return [];
+    try {
+      const checkins: HabitCheckinDto[] = JSON.parse(raw).checkins || [];
+      return checkins.filter((c) => c.localDate >= from && c.localDate <= to);
+    } catch {
+      return [];
+    }
+  },
+
+  async upsertProductivityCheckin(
+    activeUserId: string,
+    habitId: string,
+    localDate: string,
+    completed: boolean
+  ): Promise<HabitCheckinDto> {
+    if (getAppMode() === 'live') {
+      return liveRequest<HabitCheckinDto>(
+        `/me/productivity/habits/${habitId}/checkins/${encodeURIComponent(localDate)}`,
+        activeUserId,
+        {
+          method: 'PUT',
+          body: JSON.stringify({ completed }),
+        }
+      );
+    }
+    const key = `campfire_prod_demo_${activeUserId}`;
+    const state = JSON.parse(sessionStorage.getItem(key) || '{}');
+    const checkins: HabitCheckinDto[] = Array.isArray(state.checkins) ? state.checkins : [];
+    const idx = checkins.findIndex((c) => c.habitId === habitId && c.localDate === localDate);
+    const dto: HabitCheckinDto = {
+      id: idx >= 0 ? checkins[idx].id : `chk_${Math.random().toString(36).slice(2, 10)}`,
+      habitId,
+      localDate,
+      completed,
+      updatedAt: new Date().toISOString(),
+    };
+    if (idx >= 0) checkins[idx] = dto;
+    else checkins.push(dto);
+    sessionStorage.setItem(key, JSON.stringify({ ...state, checkins }));
+    return dto;
+  },
+
+  async getProductivityPreferences(activeUserId: string): Promise<ProductivityPreferencesDto> {
+    if (getAppMode() === 'live') {
+      return liveRequest<ProductivityPreferencesDto>('/me/productivity/preferences', activeUserId);
+    }
+    const raw = sessionStorage.getItem(`campfire_prod_demo_${activeUserId}`);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return (
+      parsed.preferences || {
+        focusMinutes: 25,
+        shortBreakMinutes: 5,
+        longBreakMinutes: 15,
+        resetMinutes: 2,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+        completedFocusSessions: parsed.completedFocusSessions || 0,
+        updatedAt: new Date().toISOString(),
+      }
+    );
+  },
+
+  async updateProductivityPreferences(
+    activeUserId: string,
+    prefs: Partial<{
+      focusMinutes: number;
+      shortBreakMinutes: number;
+      longBreakMinutes: number;
+      resetMinutes: number;
+      timezone: string;
+    }>
+  ): Promise<ProductivityPreferencesDto> {
+    if (getAppMode() === 'live') {
+      return liveRequest<ProductivityPreferencesDto>('/me/productivity/preferences', activeUserId, {
+        method: 'PUT',
+        body: JSON.stringify(prefs),
+      });
+    }
+    const key = `campfire_prod_demo_${activeUserId}`;
+    const state = JSON.parse(sessionStorage.getItem(key) || '{}');
+    const current = await this.getProductivityPreferences(activeUserId);
+    const updated: ProductivityPreferencesDto = {
+      ...current,
+      ...prefs,
+      updatedAt: new Date().toISOString(),
+    };
+    sessionStorage.setItem(key, JSON.stringify({ ...state, preferences: updated }));
+    return updated;
+  },
+
+  async recordProductivitySession(
+    activeUserId: string,
+    payload: { clientSessionId: string; kind: ProductivitySessionKind; plannedSeconds: number }
+  ): Promise<FocusSessionDto> {
+    if (getAppMode() === 'live') {
+      return liveRequest<FocusSessionDto>('/me/productivity/sessions', activeUserId, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+    }
+    const key = `campfire_prod_demo_${activeUserId}`;
+    const state = JSON.parse(sessionStorage.getItem(key) || '{}');
+    const nextCount = (state.completedFocusSessions || 0) + (payload.kind === 'focus' ? 1 : 0);
+    sessionStorage.setItem(key, JSON.stringify({ ...state, completedFocusSessions: nextCount }));
+    return {
+      id: `ses_${Math.random().toString(36).slice(2, 10)}`,
+      clientSessionId: payload.clientSessionId,
+      kind: payload.kind,
+      plannedSeconds: payload.plannedSeconds,
+      completedAt: new Date().toISOString(),
+      completedFocusSessions: nextCount,
+    };
+  },
+
+  async purgeProductivityData(activeUserId: string): Promise<void> {
+    if (getAppMode() === 'live') {
+      await liveRequest<unknown>('/me/productivity/data', activeUserId, {
+        method: 'DELETE',
+        body: JSON.stringify({ confirm: true }),
+      });
+      return;
+    }
+    sessionStorage.removeItem(`campfire_prod_demo_${activeUserId}`);
   },
 };

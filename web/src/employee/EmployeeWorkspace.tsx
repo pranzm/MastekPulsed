@@ -13,6 +13,8 @@ import {
   UserProfileDto,
 } from '../api/contracts';
 import { pulseApi } from '../api/apiClient';
+import { getPersonaAvatar, getPersonaMeta } from '../api/personas';
+import { MakeMeProductivePanel } from './MakeMeProductivePanel';
 import {
   Headphones,
   Sparkles,
@@ -65,27 +67,55 @@ import {
  * ============================================================================
  */
 
+/**
+ * Props accepted by the `EmployeeWorkspace` component.
+ */
 interface EmployeeWorkspaceProps {
+  /** Active transport mode (`'demo'` or `'live'`) displayed in the walkthrough header. */
   appMode: AppMode;
+  /** Currently authenticated employee profile (`/api/v1/me`). */
   currentUser: UserProfileDto;
+  /** Audience-filtered and interest-ranked feed cards (`/api/v1/feed`). */
   feed: ContentCardDto[];
+  /** Curated Mastek Radio commute queues (`/api/v1/listen/radio`). */
   radioQueues: AudioListenItemDto[];
+  /** On-demand Culture Cast podcast episodes (`/api/v1/listen/culture-cast`). */
   cultureCasts: AudioListenItemDto[];
+  /** 15-minute connection requests involving `currentUser` (`/api/v1/requests`). */
   requests: ConnectionRequestDto[];
+  /** Active Weekly Campfire Challenge prompt and the user's own entry (`/api/v1/challenges/current`). */
   challenge: ChallengeDto | null;
+  /** Current user's weekly recognition progress and milestone badges (`/api/v1/recognition/me`). */
   myRecognition: RecognitionProgressDto | null;
+  /** Optional Top 5 Community Champions leaderboard (`/api/v1/recognition/leaderboard`). */
   leaderboard: LeaderboardResponseDto | null;
+  /** Currently loaded audio track in the persistent bottom player bar. */
   activeAudio: AudioListenItemDto | null;
+  /** True when the persistent bottom audio player is actively playing. */
   isPlayingAudio: boolean;
+  /** Current playback position in seconds in the persistent bottom player bar. */
   audioPositionSec: number;
+  /** Callback to start playing a radio queue or Culture Cast episode at an optional timestamp. */
   onStartAudio: (item: AudioListenItemDto, startAtSec?: number) => void;
+  /** Callback to toggle play/pause on the active audio track. */
   onTogglePlayPause: () => void;
+  /** Callback to seek the active audio track forward/backward by `deltaSec` seconds. */
   onSeekAudio: (deltaSec: number) => void;
+  /** Callback to re-fetch all employee and recognition data after a state mutation. */
   onRefreshAll: () => Promise<void>;
+  /** Callback to switch the active persona in the top header bar. */
   onSwitchPersona: (userId: string) => void;
+  /** Callback to switch the top-level workspace mode to the Publishing Portal (`'PORTAL'`). */
   onOpenPortal: () => void;
+  /** Optional external tab request triggered by the Guided Walkthrough tour. */
+  externalNavTab?: 'PULSE' | 'CHAMPIONS' | 'PRODUCTIVE' | 'LISTEN' | 'CONNECT' | 'CONTRIBUTE' | 'PROFILE' | null;
 }
 
+/**
+ * Responsive Employee Web Experience component implementing Proposal Page 10 (`05B`),
+ * all 8 Mobile Wireframe Flows (`01`–`08`), and the Campfire Weekly Challenge &
+ * Community Champions recognition loop (`10` & `11`).
+ */
 export const EmployeeWorkspace: React.FC<EmployeeWorkspaceProps> = ({
   appMode,
   currentUser,
@@ -105,48 +135,80 @@ export const EmployeeWorkspace: React.FC<EmployeeWorkspaceProps> = ({
   onRefreshAll,
   onSwitchPersona,
   onOpenPortal,
+  externalNavTab,
 }) => {
-  const [activeNav, setActiveNav] = useState<'PULSE' | 'CHAMPIONS' | 'LISTEN' | 'CONNECT' | 'CONTRIBUTE' | 'PROFILE'>('PULSE');
+  // Active left-sidebar navigation tab ('PULSE' | 'CHAMPIONS' | 'LISTEN' | 'CONNECT' | 'CONTRIBUTE' | 'PROFILE').
+  const [activeNav, setActiveNav] = useState<'PULSE' | 'CHAMPIONS' | 'PRODUCTIVE' | 'LISTEN' | 'CONNECT' | 'CONTRIBUTE' | 'PROFILE'>('PULSE');
+
+  React.useEffect(() => {
+    if (externalNavTab) {
+      setActiveNav(externalNavTab);
+      setSelectedStory(null);
+      setComposingInviteFor(null);
+    }
+  }, [externalNavTab]);
+  // Active feed category pill on the 'PULSE' tab (Wireframe 01).
   const [categoryFilter, setCategoryFilter] = useState<'FOR_YOU' | 'LEARNING' | 'COMMUNITY' | 'UPDATES'>('FOR_YOU');
+  // Controlled search query string filtering feed cards by title, summary, tag, or author.
   const [searchQuery, setSearchQuery] = useState('');
 
   // Campfire Weekly Challenge submission state (CF-002 / D4)
+  // Controlled headline title for the user's Weekly Challenge story submission.
   const [challengeTitle, setChallengeTitle] = useState<string>(
     'What weekend badminton taught me about sprint pairing'
   );
+  // Controlled story body text for the user's Weekly Challenge story submission.
   const [challengeBody, setChallengeBody] = useState<string>(
     'Playing mixed doubles every Saturday taught me to communicate early and cover gaps without waiting to be asked. Our Pune engineering pod now uses the same habit during code reviews.'
   );
+  // True while `submitChallengeEntry` is awaiting an API response.
   const [submittingChallenge, setSubmittingChallenge] = useState<boolean>(false);
 
   // Wireframe 02 & 03: Selected Story & Invitation Composer state
+  // Story card currently opened in the full Story Detail view (Wireframe 02).
   const [selectedStory, setSelectedStory] = useState<ContentCardDto | null>(null);
+  // Toggles the human-verified audio transcript panel inside Story Detail.
   const [showStoryTranscript, setShowStoryTranscript] = useState(false);
+  // Story card for which the user is currently composing a 15-minute invitation (Wireframe 03).
   const [composingInviteFor, setComposingInviteFor] = useState<ContentCardDto | null>(null);
+  // Controlled message text inside the 15-minute Invitation Composer textarea.
   const [inviteMessage, setInviteMessage] = useState(
     'Hi Daniel, I would love to learn how you made retrospectives more inclusive. Could we compare notes?'
   );
+  // Tracks whether the current `inviteMessage` was populated via optional AI assistance.
   const [inviteAiAssisted, setInviteAiAssisted] = useState(false);
+  // Last `AiAssistanceResponseDto` returned when drafting an invitation message.
   const [inviteAiResponse, setInviteAiResponse] = useState<AiAssistanceResponseDto | null>(null);
+  // True while `sendInvitationRequest` is in flight (prevents duplicate clicks alongside `Idempotency-Key`).
   const [sendingInvite, setSendingInvite] = useState(false);
 
-  // Update AI Summary state
+  // Update AI Summary state: maps `contentId -> AiAssistanceResponseDto` for company update cards.
   const [updateSummaryMap, setUpdateSummaryMap] = useState<Record<string, AiAssistanceResponseDto>>({});
 
   // Wireframe 04 & 06: Connect Tab & Private Follow-Up Check-in state
+  // Active sub-tab inside the 'CONNECT' view ('RECEIVED' | 'SENT' | 'ACCEPTED').
   const [connectSubTab, setConnectSubTab] = useState<'RECEIVED' | 'SENT' | 'ACCEPTED'>('RECEIVED');
+  // Accepted connection request currently opened in the Private Follow-Up Check-in panel (Wireframe 06).
   const [checkInRequest, setCheckInRequest] = useState<ConnectionRequestDto | null>(null);
+  // Selected answer for "Did the conversation happen?" ('YES' | 'NO' | 'NOT_YET').
   const [checkInHappened, setCheckInHappened] = useState<HappenedAnswer>('YES');
+  // Selected boolean answer for "Was it useful?" (applicable only when `checkInHappened === 'YES'`).
   const [checkInUseful, setCheckInUseful] = useState<boolean>(true);
 
   // Wireframe 07 & 08: Listen Tab state
+  // Active sub-tab inside the 'LISTEN' view ('RADIO' for Mastek Radio, 'CULTURE_CAST' for on-demand episodes).
   const [listenSubTab, setListenSubTab] = useState<'RADIO' | 'CULTURE_CAST'>('RADIO');
+  // Currently selected Culture Cast episode in the on-demand player view (Wireframe 08).
   const [selectedEpisode, setSelectedEpisode] = useState<AudioListenItemDto | null>(cultureCasts[0] || null);
+  // Playback speed multiplier badge (`1x`, `1.25x`, `1.5x`).
   const [playbackSpeed, setPlaybackSpeed] = useState<1 | 1.25 | 1.5>(1);
+  // Toggles the episode transcript box in the Culture Cast player.
   const [showEpisodeTranscript, setShowEpisodeTranscript] = useState(true);
 
   // Wireframe 05: Contribute / Publish Story state (Backed by localStorage draft!)
+  // Per-persona localStorage key so offline story drafts never collide across personas.
   const DRAFT_KEY = `pulse_local_draft_${currentUser.id}`;
+  // Hydrate any previously auto-saved story draft for `currentUser.id` from `localStorage`.
   const savedLocalDraft = (() => {
     try {
       const raw = localStorage.getItem(DRAFT_KEY);
@@ -156,37 +218,57 @@ export const EmployeeWorkspace: React.FC<EmployeeWorkspaceProps> = ({
     }
   })();
 
+  // Controlled story title in the 'CONTRIBUTE' composer.
   const [draftTitle, setDraftTitle] = useState<string>(savedLocalDraft?.title || 'A better retrospective');
+  // Controlled story body in the 'CONTRIBUTE' composer.
   const [draftBody, setDraftBody] = useState<string>(
     savedLocalDraft?.body ||
       'After our 15-minute connection with UK Delivery, we tried five minutes of silent writing before speaking in our sprint retrospective. Quieter colleagues shared three test automation improvements immediately.'
   );
+  // Target audience ID for the new contribution (`'aud_pilot'` or `'aud_all'`).
   const [draftAudience, setDraftAudience] = useState<string>('aud_pilot');
+  // Whether to attach a voluntary 15-minute "Ask me about this" invitation offer to the story.
   const [draftIncludeInvite, setDraftIncludeInvite] = useState<boolean>(true);
+  // Weekly request capacity (`1`, `2`, or `3` places) when `draftIncludeInvite` is true.
   const [draftCapacity, setDraftCapacity] = useState<number>(2);
+  // Number of days (`7` or `14`) until the attached invitation offer expires.
   const [draftExpiresDays, setDraftExpiresDays] = useState<number>(7);
+  // Holds optional AI story-polishing response (`STORY_POLISH`) and its non-AI fallback.
   const [draftAiHelp, setDraftAiHelp] = useState<AiAssistanceResponseDto | null>(null);
+  // Controls whether the "Exact Revision 1 Submission Preview" gate is open before submitting.
   const [showRevisionPreview, setShowRevisionPreview] = useState<boolean>(false);
 
-  // Banner feedback
+  // Banner feedback toast state (`type: 'success' | 'error' | 'info'`).
   const [toastMessage, setToastMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
 
+  /**
+   * Displays a status/feedback toast banner at the top of the workspace and
+   * automatically clears it after 5 seconds.
+   * @param type Toast severity (`'success' | 'error' | 'info'`).
+   * @param text User-facing message text.
+   */
   const showToast = (type: 'success' | 'error' | 'info', text: string) => {
     setToastMessage({ type, text });
     setTimeout(() => setToastMessage(null), 5000);
   };
 
+  /**
+   * Updates `draftTitle` and `draftBody` in React state and immediately persists
+   * them to `localStorage` under `DRAFT_KEY` for offline draft resilience (Wireframe 05).
+   * @param title Updated story title.
+   * @param body Updated story body text.
+   */
   const saveDraftLocally = (title: string, body: string) => {
     setDraftTitle(title);
     setDraftBody(body);
     try {
       localStorage.setItem(DRAFT_KEY, JSON.stringify({ title, body, savedAt: new Date().toISOString() }));
     } catch {
-      // ignore
+      // Ignore storage quota errors in restricted browser contexts.
     }
   };
 
-  // Filtered Feed items
+  // Client-side category and keyword filter over the already audience-filtered `feed` array.
   const filteredFeed = feed.filter((item) => {
     if (categoryFilter === 'LEARNING') {
       if (item.contentType !== 'STORY') return false;
@@ -210,23 +292,36 @@ export const EmployeeWorkspace: React.FC<EmployeeWorkspaceProps> = ({
     return true;
   });
 
+  // Partition connection requests into Received (Pending for Host), Sent (by Requester), and Accepted.
   const receivedPending = requests.filter((r) => r.hostId === currentUser.id && r.state === 'PENDING');
   const sentRequests = requests.filter((r) => r.requesterId === currentUser.id);
   const acceptedRequests = requests.filter((r) => r.state === 'ACCEPTED');
 
+  /**
+   * Formats a duration in seconds as `MM:SS` (e.g., `130` -> `'02:10'`).
+   * @param sec Duration or position in seconds.
+   */
   const formatTime = (sec: number) => {
     const mins = Math.floor(sec / 60);
     const rem = Math.floor(sec % 60);
     return `${String(mins).padStart(2, '0')}:${String(rem).padStart(2, '0')}`;
   };
 
-  // Handlers for Primary & Supporting Journeys
+  /**
+   * Opens a feed card in the full Story Detail view (Wireframe 02).
+   * @param card Selected `ContentCardDto` story or update.
+   */
   const handleOpenStory = (card: ContentCardDto) => {
     setSelectedStory(card);
     setComposingInviteFor(null);
     setShowStoryTranscript(false);
   };
 
+  /**
+   * Opens the 15-minute Invitation Composer (Wireframe 03) for `card` with a
+   * pre-populated human-friendly starter prompt.
+   * @param card Story card whose host is being invited.
+   */
   const handleStartInviteComposer = (card: ContentCardDto) => {
     const firstName = card.authorName.split(' ')[0];
     setComposingInviteFor(card);
@@ -237,6 +332,11 @@ export const EmployeeWorkspace: React.FC<EmployeeWorkspaceProps> = ({
     setInviteAiResponse(null);
   };
 
+  /**
+   * Requests an optional AI-assisted invitation draft (`INVITATION_DRAFT`) grounded
+   * in the story's title and the caller's explicit interests. Automatically falls
+   * back to `res.templateFallback` if the 720-action AI budget cap is reached.
+   */
   const handleSuggestInviteWithAi = async () => {
     if (!composingInviteFor) return;
     try {
@@ -261,6 +361,10 @@ export const EmployeeWorkspace: React.FC<EmployeeWorkspaceProps> = ({
     }
   };
 
+  /**
+   * Populates the deterministic non-AI invitation template directly without
+   * consuming an AI budget action (Supporting Journey C).
+   */
   const handleUseNonAiTemplateForInvite = async () => {
     if (!composingInviteFor) return;
     const firstName = composingInviteFor.authorName.split(' ')[0];
@@ -271,6 +375,11 @@ export const EmployeeWorkspace: React.FC<EmployeeWorkspaceProps> = ({
     showToast('info', 'Applied deterministic non-AI template.');
   };
 
+  /**
+   * Sends the 15-minute invitation request (`POST /api/v1/requests`) using a
+   * caller-scoped `Idempotency-Key` (`idem-${currentUser.id}-${invitation.id}`),
+   * refreshes workspace state, and navigates to `Connect > Sent`.
+   */
   const handleSendInvitation = async () => {
     if (!composingInviteFor || !composingInviteFor.invitation) return;
     setSendingInvite(true);
@@ -297,6 +406,12 @@ export const EmployeeWorkspace: React.FC<EmployeeWorkspaceProps> = ({
     }
   };
 
+  /**
+   * Handles a host's `'ACCEPTED'` or `'DECLINED'` decision (or a requester's `'CANCELLED'`
+   * action) on a pending connection request (`PATCH /api/v1/requests/{id}`).
+   * @param req Target connection request.
+   * @param decision `'ACCEPTED' | 'DECLINED' | 'CANCELLED'`.
+   */
   const handleHostDecision = async (req: ConnectionRequestDto, decision: 'ACCEPTED' | 'DECLINED' | 'CANCELLED') => {
     try {
       await pulseApi.updateRequestState(currentUser.id, req.id, decision, req.version);
@@ -315,6 +430,10 @@ export const EmployeeWorkspace: React.FC<EmployeeWorkspaceProps> = ({
     }
   };
 
+  /**
+   * Saves the caller's Private Follow-Up Check-in response (`POST /api/v1/requests/{id}/confirmations`).
+   * Displays a celebratory toast when both participants have confirmed `Happened=Yes` & `Useful=Yes`.
+   */
   const handleSaveConfirmation = async () => {
     if (!checkInRequest) return;
     try {
@@ -342,6 +461,10 @@ export const EmployeeWorkspace: React.FC<EmployeeWorkspaceProps> = ({
     }
   };
 
+  /**
+   * Requests a source-linked summary (`UPDATE_SUMMARY`) for a company update card.
+   * @param card Official company update card.
+   */
   const handleSummarizeUpdate = async (card: ContentCardDto) => {
     try {
       const res = await pulseApi.requestAiAssist(currentUser.id, 'UPDATE_SUMMARY', card.id, '');
@@ -351,6 +474,10 @@ export const EmployeeWorkspace: React.FC<EmployeeWorkspaceProps> = ({
     }
   };
 
+  /**
+   * Submits a new story contribution from the `CONTRIBUTE` tab (`POST /api/v1/content`).
+   * @param submitForReview `true` to place Revision 1 in `IN_REVIEW`; `false` to save as `DRAFT`.
+   */
   const handleSubmitContribution = async (submitForReview: boolean) => {
     if (!draftTitle.trim() || !draftBody.trim()) {
       showToast('error', 'Please enter a story title and body.');
@@ -380,6 +507,11 @@ export const EmployeeWorkspace: React.FC<EmployeeWorkspaceProps> = ({
     }
   };
 
+  /**
+   * Submits or resubmits the caller's Weekly Campfire Challenge story (`POST /api/v1/challenges/{id}/entries`).
+   * Submission awards `0` points immediately; `+20` points and `First Spark` unlock only after
+   * Reviewer Priya approves and Publisher Marcus publishes the revision.
+   */
   const handleSubmitChallengeEntry = async () => {
     if (!challenge) return;
     setSubmittingChallenge(true);
@@ -402,6 +534,12 @@ export const EmployeeWorkspace: React.FC<EmployeeWorkspaceProps> = ({
     }
   };
 
+  /**
+   * Gives colleague appreciation to a published story (`POST /api/v1/content/{id}/appreciations`).
+   * Awards up to +5 giving points (capped at 3 stories/week) and +5 receiving points to the author
+   * (capped at 5 distinct colleagues/week).
+   * @param card Published colleague story card.
+   */
   const handleAppreciateStory = async (card: ContentCardDto) => {
     try {
       const res = await pulseApi.appreciateStory(currentUser.id, card.id);
@@ -419,6 +557,10 @@ export const EmployeeWorkspace: React.FC<EmployeeWorkspaceProps> = ({
     }
   };
 
+  /**
+   * Toggles the caller's public visibility on the Top 5 Community Champions leaderboard
+   * (`PUT /api/v1/recognition/preferences`) while preserving private points and badges.
+   */
   const handleToggleLeaderboardVisibility = async () => {
     if (!myRecognition) return;
     try {
@@ -520,6 +662,7 @@ export const EmployeeWorkspace: React.FC<EmployeeWorkspaceProps> = ({
                   label: 'Challenge & Points',
                   badge: `${myRecognition?.points ?? 0} pts`,
                 },
+                { id: 'PRODUCTIVE', label: 'Make me Productive', badge: 'Private' },
                 { id: 'LISTEN', label: 'Listen', badge: 'Radio + Cast' },
                 {
                   id: 'CONNECT',
@@ -560,6 +703,13 @@ export const EmployeeWorkspace: React.FC<EmployeeWorkspaceProps> = ({
 
         {/* Center Main Content Area */}
         <main className="lg:col-span-7 space-y-5">
+          {/* =====================================================================
+              TAB: MAKE ME PRODUCTIVE (Section 14 · Proposal Pages 20–23)
+             ===================================================================== */}
+          {activeNav === 'PRODUCTIVE' && (
+            <MakeMeProductivePanel appMode={appMode} currentUser={currentUser} />
+          )}
+
           {/* =====================================================================
               TAB: CHALLENGE & COMMUNITY CHAMPIONS (Proposal Pages 16 & 17 · D4 & D5)
              ===================================================================== */}
@@ -779,9 +929,14 @@ export const EmployeeWorkspace: React.FC<EmployeeWorkspaceProps> = ({
                         }`}
                       >
                         <div className="flex items-center gap-3">
-                          <span className="w-7 h-7 rounded-full bg-[#002180] text-white text-xs font-bold flex items-center justify-center">
+                          <span className="w-7 h-7 rounded-full bg-[#002180] text-white text-xs font-bold flex items-center justify-center shrink-0">
                             #{row.rank}
                           </span>
+                          <img
+                            src={getPersonaAvatar(row.userId || row.displayName)}
+                            alt={row.displayName}
+                            className="w-10 h-10 rounded-full object-cover border-2 border-white shadow-sm shrink-0"
+                          />
                           <div>
                             <div className="font-bold text-slate-900">
                               {row.displayName}{' '}
@@ -919,11 +1074,20 @@ export const EmployeeWorkspace: React.FC<EmployeeWorkspaceProps> = ({
                     className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm hover:border-blue-300 transition-all"
                   >
                     <div className="flex items-center justify-between text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                      <span>
-                        {card.contentType === 'UPDATE'
-                          ? `COMPANY UPDATE ${card.durationSeconds ? `/ ${Math.round(card.durationSeconds / 60)} MIN` : ''}`
-                          : `COLLEAGUE STORY · ${card.authorName} / ${card.authorFunction} / ${card.authorRegion}`}
-                      </span>
+                      <div className="flex items-center gap-2.5">
+                        {card.contentType === 'STORY' && (
+                          <img
+                            src={getPersonaAvatar(card.authorId || card.authorName)}
+                            alt={card.authorName}
+                            className="w-9 h-9 rounded-full object-cover border border-slate-200 shadow-sm shrink-0"
+                          />
+                        )}
+                        <span>
+                          {card.contentType === 'UPDATE'
+                            ? `COMPANY UPDATE ${card.durationSeconds ? `/ ${Math.round(card.durationSeconds / 60)} MIN` : ''}`
+                            : `COLLEAGUE STORY · ${card.authorName} / ${card.authorFunction} / ${card.authorRegion}`}
+                        </span>
+                      </div>
                       <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded text-[11px] normal-case">
                         Audience: {card.audienceName}
                       </span>
@@ -1021,13 +1185,20 @@ export const EmployeeWorkspace: React.FC<EmployeeWorkspaceProps> = ({
                 <ArrowLeft className="w-4 h-4" /> &lt; Story (Back to Your Campfire)
               </button>
 
-              <div className="border-b border-slate-200 pb-4">
-                <div className="text-xs font-semibold text-slate-500">
-                  {selectedStory.authorName} / {selectedStory.authorFunction} / {selectedStory.authorRegion}
-                </div>
-                <h1 className="text-2xl font-bold text-slate-900 mt-1">{selectedStory.title}</h1>
-                <div className="mt-2 text-xs text-[#002180] bg-blue-50 inline-block px-2.5 py-1 rounded font-medium">
-                  {selectedStory.factualExplanation}
+              <div className="border-b border-slate-200 pb-4 flex items-start gap-3.5">
+                <img
+                  src={getPersonaAvatar(selectedStory.authorId || selectedStory.authorName)}
+                  alt={selectedStory.authorName}
+                  className="w-12 h-12 rounded-full object-cover border-2 border-blue-200 shadow-sm shrink-0 mt-0.5"
+                />
+                <div>
+                  <div className="text-xs font-semibold text-slate-500">
+                    {selectedStory.authorName} / {selectedStory.authorFunction} / {selectedStory.authorRegion}
+                  </div>
+                  <h1 className="text-2xl font-bold text-slate-900 mt-1">{selectedStory.title}</h1>
+                  <div className="mt-2 text-xs text-[#002180] bg-blue-50 inline-block px-2.5 py-1 rounded font-medium">
+                    {selectedStory.factualExplanation}
+                  </div>
                 </div>
               </div>
 
@@ -1972,10 +2143,30 @@ export const EmployeeWorkspace: React.FC<EmployeeWorkspaceProps> = ({
              ===================================================================== */}
           {activeNav === 'PROFILE' && (
             <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm space-y-5">
-              <h1 className="text-2xl font-bold text-[#002180]">Profile & Participant Controls</h1>
+              {/* Profile Hero Card with Portrait Photo & Bio */}
+              <div className="flex flex-col sm:flex-row sm:items-center gap-4 p-4 rounded-xl bg-gradient-to-r from-blue-50 via-indigo-50/60 to-slate-50 border border-blue-200">
+                <img
+                  src={getPersonaAvatar(currentUser.id)}
+                  alt={currentUser.displayName}
+                  className="w-20 h-20 rounded-full object-cover border-4 border-white shadow-md shrink-0"
+                />
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h1 className="text-2xl font-extrabold text-[#002180]">{currentUser.displayName}</h1>
+                    <span className="text-xs font-bold bg-[#002180] text-white px-2.5 py-0.5 rounded-full">
+                      {getPersonaMeta(currentUser.id).jobTitle}
+                    </span>
+                  </div>
+                  <div className="text-xs font-semibold text-slate-600">
+                    {getPersonaMeta(currentUser.id).email} · {currentUser.functionName} ({currentUser.region})
+                  </div>
+                  <p className="text-xs text-slate-700 leading-relaxed">{getPersonaMeta(currentUser.id).bio}</p>
+                </div>
+              </div>
+
               <p className="text-sm text-slate-600">
                 Minimum collection: Opt-in profile fields, explicit interests, notification frequency, and host capacity
-                pause controls. No employee appraisal scores or public popularity rankings.
+                pause controls. No employee appraisal scores or non-consensual rankings.
               </p>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 bg-slate-50 p-4 rounded-xl border border-slate-200 text-sm">

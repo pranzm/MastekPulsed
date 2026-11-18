@@ -17,21 +17,39 @@ import java.util.Optional;
  * ============================================================================
  * File: ContentItemRepository.java
  * Journey: Discovery Feed, Listen Tab & Publishing Portal (CF-004, CF-010).
+ *
  * Why it is designed this way:
  *   1. Provides `findByIdWithPessimisticLock` (`SELECT ... FOR UPDATE`) so
  *      concurrent review, edit, publish, and withdraw actions on the same
  *      content item are serialized atomically at the database level.
- *   2. Queries published items by `publishedAudienceId` (or `audienceId` fallback)
+ *   2. Queries published items by `COALESCE(c.publishedAudienceId, c.audienceId)`
  *      so audience edits on unapproved revisions never leak old published text.
  * ============================================================================
  */
+// @Repository registers this interface as a Spring Data JPA repository bean.
 @Repository
 public interface ContentItemRepository extends JpaRepository<ContentItemEntity, String> {
 
+    /**
+     * Acquires a pessimistic write lock (`SELECT ... FOR UPDATE`) on a content item row
+     * to serialize concurrent editorial mutations (submit, edit, review, publish, withdraw).
+     *
+     * @param id primary key of the content item
+     * @return locked {@link ContentItemEntity} wrapped in an {@link Optional}
+     */
+    // @Lock(LockModeType.PESSIMISTIC_WRITE) instructs Hibernate to issue `SELECT ... FOR UPDATE`.
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT c FROM ContentItemEntity c WHERE c.id = :id")
     Optional<ContentItemEntity> findByIdWithPessimisticLock(@Param("id") String id);
 
+    /**
+     * Fetches all published content items whose effective published audience (`COALESCE(publishedAudienceId, audienceId)`)
+     * belongs to the caller's permitted audience list, ordered by publication timestamp descending.
+     *
+     * @param audienceIds list of audience IDs the caller is permitted to view
+     * @param status      expected status (typically `"PUBLISHED"`)
+     * @return matching content items ordered newest first
+     */
     @Query("""
         SELECT c FROM ContentItemEntity c
         WHERE c.status = :status
@@ -43,6 +61,15 @@ public interface ContentItemRepository extends JpaRepository<ContentItemEntity, 
             @Param("audienceIds") List<String> audienceIds,
             @Param("status") String status);
 
+    /**
+     * Fetches published content items of a specific `contentType` (e.g., `RADIO_QUEUE` or `CULTURE_CAST`)
+     * whose effective published audience is in the caller's permitted audiences.
+     *
+     * @param audienceIds list of audience IDs the caller is permitted to view
+     * @param contentType target content type (`RADIO_QUEUE`, `CULTURE_CAST`, `STORY`, `UPDATE`)
+     * @param status      expected status (`"PUBLISHED"`)
+     * @return matching content items ordered newest first
+     */
     @Query("""
         SELECT c FROM ContentItemEntity c
         WHERE c.status = :status
@@ -56,7 +83,20 @@ public interface ContentItemRepository extends JpaRepository<ContentItemEntity, 
             @Param("contentType") String contentType,
             @Param("status") String status);
 
+    /**
+     * Finds all content items in `SCHEDULED` status whose `scheduledFor` timestamp is due (`<= now`).
+     * Used by {@link com.mastek.pulse.outbox.OutboxWorkerService} to release scheduled publications.
+     *
+     * @param status `"SCHEDULED"`
+     * @param now    current UTC timestamp from `PulseClock`
+     * @return list of due scheduled content items
+     */
     List<ContentItemEntity> findByStatusAndScheduledForLessThanEqual(String status, Instant now);
 
+    /**
+     * Lists all content items ordered by `updated_at DESC` for the Publishing Portal queue.
+     *
+     * @return all content items ordered by most recently updated first
+     */
     List<ContentItemEntity> findAllByOrderByUpdatedAtDesc();
 }

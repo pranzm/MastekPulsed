@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Make me Productive · Campfire</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.mjs"></script>
+</head>
+<body>
+  <main>
+    <header>
+      <p class="eyebrow">MASTEK CAMPFIRE / YOUR PERSONAL SPACE</p>
+      <h1>Make me Productive</h1>
+      <p>Small habits. Time to focus. Room to reset.</p>
+      <p id="privacy" class="notice"></p>
+    </header>
+    <div id="tools">
+      <section class="habits">
+        <div class="heading">
+          <div>
+            <p class="eyebrow">01 / BUILD YOUR ROUTINE</p>
+            <h2>My habits</h2>
+          </div>
+          <span id="progress"></span>
+        </div>
+        <p id="week"></p>
+        <div class="table-wrap">
+          <table>
+            <thead id="days"></thead>
+            <tbody id="habits"></tbody>
+          </table>
+        </div>
+        <form id="habit-form">
+          <input id="name" aria-label="Habit name" placeholder="A small habit you want to build" required maxlength="80">
+          <select id="schedule" aria-label="Habit schedule">
+            <option value="daily">Every day</option>
+            <option value="weekdays">Weekdays</option>
+            <option value="weekends">Weekends</option>
+          </select>
+          <button id="save-habit">Add habit</button>
+          <button type="button" id="cancel" hidden>Cancel edit</button>
+        </form>
+        <p class="muted">Tick or untick a day. Edit a habit to make it your own. No points or public rankings.</p>
+        <button id="clear" class="secondary">Clear my demo data</button>
+      </section>
+      <div class="grid">
+        <section>
+          <p class="eyebrow">02 / ONE THING AT A TIME</p>
+          <h2>Pomodoro focus</h2>
+          <p>Choose one task. Focus, then take a break.</p>
+          <div class="settings">
+            <label>Focus minutes<input id="focus" type="number" min="1" max="120" value="25"></label>
+            <label>Short break<input id="short" type="number" min="1" max="60" value="5"></label>
+            <label>Long break<input id="long" type="number" min="1" max="60" value="15"></label>
+          </div>
+          <div class="actions">
+            <button data-mode="focus">Focus</button>
+            <button data-mode="short" class="secondary">Short break</button>
+            <button data-mode="long" class="secondary">Long break</button>
+          </div>
+          <p class="muted">Try a longer break after four focus sessions. You choose when to begin each session.</p>
+        </section>
+        <section>
+          <p class="eyebrow">03 / GET UNSTUCK</p>
+          <h2>A gentler next step</h2>
+          <ol>
+            <li>Make the next action concrete: open the document and write one sentence.</li>
+            <li>Try just five minutes, then decide whether to continue.</li>
+            <li>Choose a time and place with fewer distractions.</li>
+          </ol>
+          <button id="five">Try a five-minute start</button>
+          <p class="muted">
+            <a href="https://www.nhs.uk/every-mind-matters/mental-wellbeing-tips/self-help-cbt-techniques/tackling-your-to-do-list/" target="_blank" rel="noopener">Read the NHS task-starting guidance</a>
+          </p>
+        </section>
+      </div>
+      <section class="reset">
+        <div>
+          <p class="eyebrow">PAUSE &amp; RESET</p>
+          <h2>Find a little space</h2>
+          <p>Box breathing: breathe in, hold, breathe out, hold — four seconds each. Stay comfortable; stop and breathe naturally if it feels uncomfortable.</p>
+          <p>Mindfulness: notice your breath or the sounds around you. Gently return your attention when it wanders. You can stop at any time.</p>
+          <label>Session minutes <input id="reset-min" type="number" min="1" max="30" value="2"></label>
+          <div class="actions">
+            <button data-mode="breath">Box breathing</button>
+            <button data-mode="mind" class="secondary">Mindfulness</button>
+          </div>
+          <p class="muted">
+            <a href="https://health.clevelandclinic.org/box-breathing-benefits" target="_blank" rel="noopener">Breathing guidance</a> ·
+            <a href="https://www.nhs.uk/mental-health/self-help/tips-and-support/mindfulness/" target="_blank" rel="noopener">Mindfulness guidance</a>
+          </p>
+        </div>
+        <div class="clock">
+          <p id="timer-label">Focus</p>
+          <output id="clock" aria-live="off" aria-label="Time remaining">25:00</output>
+          <p id="phase" role="status" aria-live="polite">Ready when you are</p>
+          <div class="actions">
+            <button id="start">Start</button>
+            <button id="reset-timer" class="secondary">Reset</button>
+          </div>
+          <p id="completed" class="muted"></p>
+        </div>
+      </section>
+      <p id="feedback" role="status" aria-live="polite"></p>
+    </div>
+    <footer>Voluntary personal tools. No manager dashboard, employee scoring or AI analysis of your habits.</footer>
+  </main>
+</body>
+</html>

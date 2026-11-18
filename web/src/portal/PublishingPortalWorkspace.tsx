@@ -30,6 +30,7 @@ import {
  * Journey: Supporting Journey B ("Submit a contribution -> review the exact
  *          revision -> publish to the intended audience") + Page 11 Publishing
  *          Portal Wireframe + Page 5 & 12 Pilot Thresholds & AI Budget Gate.
+ *
  * Why it is designed this way:
  *   Matches the exact layout & navigation of Proposal Page 11 ("05C / PUBLISHING
  *   PORTAL WIREFRAME: Create. Review. Publish with confidence."):
@@ -48,16 +49,31 @@ import {
  * ============================================================================
  */
 
+/**
+ * Props accepted by the `PublishingPortalWorkspace` component.
+ */
 interface PublishingPortalProps {
+  /** Currently authenticated portal user (`REVIEWER`, `PUBLISHER`, `MODERATOR`, or `ADMIN`). */
   currentUser: UserProfileDto;
+  /** List of content revisions in the editorial queue scoped to `currentUser.audiences`. */
   portalQueue: PortalQueueItemDto[];
+  /** Immutable editorial and security audit log events (`/api/v1/portal/audit-log`). */
   auditLog: AuditEventDto[];
+  /** Aggregate 4-week pilot threshold gate metrics (`/api/v1/pilot/metrics`). */
   pilotMetrics: PilotMetricsDto;
+  /** Current 4-week pilot AI action budget and hard-cap telemetry (`/api/v1/ai/budget`). */
   aiBudget: AiBudgetStatusDto;
+  /** Callback to reload all portal and employee data after an editorial state change. */
   onRefreshAll: () => Promise<void>;
+  /** Callback to switch the active persona (e.g., Priya Reviewer -> Marcus Publisher). */
   onSwitchPersona: (userId: string) => void;
 }
 
+/**
+ * Role-Based Publishing Portal component implementing Proposal Page 11 (`05C`),
+ * the 4-week Pilot Threshold Gate dashboard (Proposal Page 12), and the 720-action
+ * AI Budget Hard-Cap simulator (Proposal Page 5).
+ */
 export const PublishingPortalWorkspace: React.FC<PublishingPortalProps> = ({
   currentUser,
   portalQueue,
@@ -67,29 +83,51 @@ export const PublishingPortalWorkspace: React.FC<PublishingPortalProps> = ({
   onRefreshAll,
   onSwitchPersona,
 }) => {
+  // Currently selected left-sidebar navigation section (defaults to 'REVIEW_QUEUE').
   const [activeSection, setActiveSection] = useState<
     'REVIEW_QUEUE' | 'DASHBOARD' | 'CONTENT' | 'SCHEDULE' | 'MEDIA' | 'AUDIENCES' | 'AUDIT_LOG'
   >('REVIEW_QUEUE');
 
+  // ID of the queue item currently inspected in the right-hand Revision Inspector panel.
   const [selectedItemId, setSelectedItemId] = useState<string>(portalQueue[0]?.id || 'cc_ep_03');
+  // Optional reviewer notes entered before clicking "Approve revision" or "Request changes".
   const [reviewerNotes, setReviewerNotes] = useState<string>('');
+  // Target ISO-8601 UTC timestamp when scheduling an approved revision for future release.
   const [scheduleIso, setScheduleIso] = useState<string>('2026-10-28T09:00:00Z');
 
-  // Edit-Invalidates-Approval Editor State
+  // Edit-Invalidates-Approval Editor State (Proposal Page 11 invariant)
+  // True when the user is editing a queue item's title, body, or audience.
   const [editingItem, setEditingItem] = useState<boolean>(false);
+  // Controlled input state for the edited headline title.
   const [editTitle, setEditTitle] = useState<string>('');
+  // Controlled textarea state for the edited body text.
   const [editBody, setEditBody] = useState<string>('');
+  // Controlled select state for the edited target audience ID.
   const [editAudience, setEditAudience] = useState<string>('aud_pilot');
 
+  // Banner alert message shown after Reviewer, Publisher, or Budget Simulator actions.
   const [portalAlert, setPortalAlert] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
 
+  // Resolve the currently selected queue item (falling back to the first item in the queue).
   const selectedItem = portalQueue.find((i) => i.id === selectedItemId) || portalQueue[0];
 
+  /**
+   * Displays a temporary status/error alert banner at the top of the Publishing Portal
+   * and automatically dismisses it after 6 seconds.
+   * @param type Visual severity style (`'success' | 'error' | 'info'`).
+   * @param text Human-readable alert message.
+   */
   const showAlert = (type: 'success' | 'error' | 'info', text: string) => {
     setPortalAlert({ type, text });
     setTimeout(() => setPortalAlert(null), 6000);
   };
 
+  /**
+   * Submits a Reviewer decision (`'APPROVE'` or `'REQUEST_CHANGES'`) for the exact
+   * `selectedItem.currentVersion`. Enforces `REVIEWER` role and `approved_by != author_id`
+   * (no self-approval).
+   * @param decision `'APPROVE'` to transition to `APPROVED`, or `'REQUEST_CHANGES'` to return to `DRAFT`.
+   */
   const handleReviewDecision = async (decision: 'APPROVE' | 'REQUEST_CHANGES') => {
     if (!selectedItem) return;
     try {
@@ -113,6 +151,13 @@ export const PublishingPortalWorkspace: React.FC<PublishingPortalProps> = ({
     }
   };
 
+  /**
+   * Releases an `APPROVED` revision immediately (`'IMMEDIATE'` -> `PUBLISHED`) or
+   * schedules it (`'SCHEDULED'` -> `SCHEDULED`). Requires the `PUBLISHER` role.
+   * When a Weekly Challenge story transitions to `PUBLISHED`, its author is
+   * awarded +20 contribution points and the `First Spark` badge.
+   * @param mode `'IMMEDIATE'` or `'SCHEDULED'`.
+   */
   const handlePublishAction = async (mode: 'IMMEDIATE' | 'SCHEDULED') => {
     if (!selectedItem) return;
     try {
@@ -129,6 +174,12 @@ export const PublishingPortalWorkspace: React.FC<PublishingPortalProps> = ({
     }
   };
 
+  /**
+   * Saves edits to a portal item's title, body, or audience.
+   * Enforces the Proposal Page 11 invariant: editing content or audience after
+   * approval increments `currentVersion` (`Revision N+1`), clears `approvedBy`,
+   * and resets `status` back to `IN_REVIEW`.
+   */
   const handleEditInvalidateApproval = async () => {
     if (!selectedItem) return;
     try {
@@ -150,6 +201,11 @@ export const PublishingPortalWorkspace: React.FC<PublishingPortalProps> = ({
     }
   };
 
+  /**
+   * Withdraws a published content item from employee feeds (`status` -> `'WITHDRAWN'`).
+   * Requires `PUBLISHER` or `MODERATOR` role and reverses any Weekly Challenge
+   * recognition points tied to that item.
+   */
   const handleWithdraw = async () => {
     if (!selectedItem) return;
     try {
@@ -197,6 +253,7 @@ export const PublishingPortalWorkspace: React.FC<PublishingPortalProps> = ({
         </div>
       </div>
 
+      {/* Portal Feedback Alert Banner */}
       {portalAlert && (
         <div
           role="alert"
@@ -255,7 +312,7 @@ export const PublishingPortalWorkspace: React.FC<PublishingPortalProps> = ({
              ===================================================================== */}
           {(activeSection === 'REVIEW_QUEUE' || activeSection === 'CONTENT' || activeSection === 'SCHEDULE') && (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-              {/* Queue List */}
+              {/* Left Column: Editorial Queue List */}
               <div className="lg:col-span-6 bg-white rounded-xl border border-slate-200 p-5 shadow-sm space-y-4">
                 <div>
                   <h1 className="text-2xl font-bold text-[#002180]">Review queue</h1>
@@ -311,7 +368,7 @@ export const PublishingPortalWorkspace: React.FC<PublishingPortalProps> = ({
                 </div>
               </div>
 
-              {/* Selected Revision Inspector & Role-Enforced Action Box (Page 11 Bottom Box) */}
+              {/* Right Column: Selected Revision Inspector & Role-Enforced Action Box (Page 11 Bottom Box) */}
               {selectedItem && (
                 <div className="lg:col-span-6 bg-white rounded-xl border border-slate-200 p-6 shadow-sm space-y-5">
                   <div className="border-b border-slate-200 pb-4">
@@ -334,10 +391,12 @@ export const PublishingPortalWorkspace: React.FC<PublishingPortalProps> = ({
 
                   {!editingItem ? (
                     <>
+                      {/* Full Revision Body Text Preview */}
                       <div className="bg-slate-50 rounded-xl border border-slate-200 p-4 text-sm text-slate-800 whitespace-pre-line">
                         {selectedItem.bodyText}
                       </div>
 
+                      {/* Revision Provenance & Approval Metadata */}
                       <div className="text-xs text-slate-600 space-y-1">
                         <div>
                           <strong>Creator:</strong> {selectedItem.authorName} ({selectedItem.authorId})
@@ -434,6 +493,7 @@ export const PublishingPortalWorkspace: React.FC<PublishingPortalProps> = ({
                       </div>
                     </>
                   ) : (
+                    /* Inline Editor Form that creates Revision N+1 and resets status to IN_REVIEW */
                     <div className="space-y-3 bg-amber-50/60 p-4 rounded-xl border border-amber-300">
                       <div className="text-xs font-bold text-amber-900">
                         Editing "{selectedItem.title}" — Saving will create Revision {selectedItem.currentVersion + 1}{' '}
@@ -485,6 +545,7 @@ export const PublishingPortalWorkspace: React.FC<PublishingPortalProps> = ({
              ===================================================================== */}
           {activeSection === 'DASHBOARD' && (
             <div className="space-y-6">
+              {/* Five Pilot Threshold Gates Card */}
               <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm space-y-4">
                 <h2 className="text-xl font-bold text-[#002180]">
                   06 / The Learning Plan — Four-Week Pilot Threshold Gates (Proposal Page 12)
@@ -570,6 +631,7 @@ export const PublishingPortalWorkspace: React.FC<PublishingPortalProps> = ({
                   </span>
                 </div>
 
+                {/* Progress bar visualizing percentage of the 720-action AI budget consumed */}
                 <div className="w-full h-3 bg-slate-200 rounded-full overflow-hidden">
                   <div
                     className={`h-full transition-all ${
@@ -583,6 +645,7 @@ export const PublishingPortalWorkspace: React.FC<PublishingPortalProps> = ({
                   />
                 </div>
 
+                {/* Interactive Simulator Buttons for 50%, 80%, and 100% Hard Cap */}
                 <div className="flex flex-wrap items-center gap-2 pt-2">
                   <span className="text-xs font-semibold text-slate-600 mr-2">Simulate Budget Thresholds:</span>
                   {(

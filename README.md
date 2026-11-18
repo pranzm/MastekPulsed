@@ -47,3 +47,7 @@ Start with [the demo guide](docs/campfire/DEMO-GUIDE.md) and [implementation sto
    - Submit a contribution -> **Priya** (`REVIEWER`) reviews the exact revision (no self-approval) -> **Marcus** (`PUBLISHER`) releases or schedules it to the intended audience. Any edit after approval automatically invalidates approval and creates a new revision in `IN_REVIEW`.
 4. **Supporting Journey C (Optional AI with Fallback & Budget Gate):**
    - Use optional AI drafting or summarization governed by the 720-action budget cap (50%, 80%, 100% alerts), review the labeled output alongside a deterministic non-AI template fallback, and explicitly choose the next action.
+
+## Make me Productive — 17 November 2026
+
+Open **Make me Productive** from the browser demo or Employee Web navigation. Direct preview: `/productivity/index.html?mode=demo`. Includes editable habits, customizable focus/break timers, getting-started hints, box breathing and mindfulness. Fictional data only; live personal entry is gated pending verified employee authentication. See [development plan](docs/campfire/MAKE-ME-PRODUCTIVE-PLAN.md) and [updated proposal](mastek-campfire-proposal-productivity.pdf). Native implementation is planned.

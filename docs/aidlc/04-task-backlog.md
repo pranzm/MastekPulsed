@@ -144,3 +144,62 @@ Detailed acceptance criteria and dependencies: [CF-001–CF-012](../campfire/IMP
 See [D0–D6](../campfire/DEVELOPMENT-PLAN-2026-11-17.md) and verified execution evidence in [DAILY-RESULTS-2026-11-17.md](../campfire/DAILY-RESULTS-2026-11-17.md):
 - **D0–D5 Completed & Verified** (`11/11` Node tests, `7/7` Java integration tests on H2 and PostgreSQL 16.16, `npm --prefix web run build` clean).
 - **D6 Blocked** on missing external `voice-service/` branch.
+
+---
+
+## Epic 8: Pre-Filled Demo Login Flow, Persona Portrait Photos & Full Mobile-Web Tab Parity
+*Goal: Start both Web and Mobile POCs with a pre-filled Demo Sign-In flow, rich persona portrait photos across all screens, and 100% tab/wireframe parity between Mobile and Web.*
+
+- [x] **TASK-801: Shared Persona Portrait Photos & Pre-Saved Demo Credentials (`web/src/api/personas.ts` & `mobile/App.tsx`)**
+  - **Target:** `web/src/api/personas.ts`, `mobile/App.tsx`
+  - **Details:** Provide instant-loading portrait photos, corporate emails (`asha.patel@mastek.com`, `daniel.wright@mastek.com`, `priya.nair@mastek.com`, `marcus.vance@mastek.com`, `elena.rostova@mastek.com`, `rohan.deshmukh@mastek.com`), job titles, bios, and pre-stored demo password (`Campfire@2026!`) for all personas.
+  - **Acceptance Criteria:** Every persona displays a crisp portrait avatar on Login, Header, Feed cards, Leaderboard rows, Connection requests, Portal queue, and Profile screens with zero broken images offline or online.
+
+- [x] **TASK-802: Pre-Filled Demo Sign-In Gate & Profile Photo Integration on Web (`web/src/App.tsx`, `EmployeeWorkspace.tsx`, `PublishingPortalWorkspace.tsx`)**
+  - **Target:** `web/src/App.tsx`, `web/src/employee/EmployeeWorkspace.tsx`, `web/src/portal/PublishingPortalWorkspace.tsx`
+  - **Details:** Present the Mastek Campfire Sign-In screen with 1-click persona selection, pre-populated email & password (`Campfire@2026!`), transport mode selector (`DEMO` vs `LIVE`), and Sign Out action in Header & Profile tab. Render persona photos across Feed, Champions Leaderboard, Connect, Portal Queue, and Profile.
+  - **Acceptance Criteria:** Web app starts at the Sign-In screen with password already stored, signs into the selected persona, and renders profile photos across all views.
+
+- [x] **TASK-803: Mobile App Login Flow, Profile Photos & Full 7-Tab Web/Wireframe Parity (`mobile/App.tsx`)**
+  - **Target:** `mobile/App.tsx`
+  - **Details:** Implement the pre-filled Mobile Sign-In screen, persistent audio mini-player bar, and all 7 tabs matching Web and Wireframes 01–11 (`Pulse`, `Champions`, `Listen`, `Connect`, `Contribute`, `Portal`, `Profile`) with full interactive state (Challenge submission -> Priya Review -> Marcus Publish `+20 pts` -> Colleague Appreciation `+5/+5` -> Opt-out Leaderboard -> 15-min Invite -> Locked Accept -> Bilateral Check-in).
+  - **Acceptance Criteria:** `npm --prefix mobile run typecheck` passes with 0 errors and Expo Go renders the Login flow, profile photos, and all 7 tabs seamlessly.
+
+---
+
+## Epic 9: Section 14 — Make me Productive (`MP-01` through `MP-08`, Available in Java Live Mode)
+*Goal: Deliver the voluntary personal space (My Habits, Pomodoro Focus, Get Unstuck, Box Breathing, and Mindfulness) in both Demo and Java Live modes with strict owner-scoped persistence (`V4__make_me_productive.sql`), while tracking verified OIDC identity hardening (`MP-02`) for pilot release.*
+
+- [x] **TASK-901 (`MP-01` / `MP-03`): Flyway `V4__make_me_productive.sql` & Owner-Scoped `productivity/` Backend Module**
+  - **Target:** `backend/src/main/resources/db/migration/V4__make_me_productive.sql`, `backend/src/main/java/com/mastek/pulse/productivity/`, `backend/src/test/java/com/mastek/pulse/MakeMeProductiveTest.java`
+  - **Details:** Add `personal_habits`, `habit_checkins`, `productivity_preferences`, and `focus_sessions`. Expose `/api/v1/me/productivity/*` endpoints with `Cache-Control: no-store`, optimistic locking (`409 STALE_VERSION`), local-date & schedule check-in validation (`422`), `clientSessionId` deduplication, and `404` owner isolation (zero bypass for `ADMIN`/`REVIEWER`/`PUBLISHER`).
+  - **Acceptance Criteria:** `MakeMeProductiveTest` verifies cross-user `404` isolation, `409` optimistic lock conflict, check-in validation, session deduplication, and data purge.
+
+- [x] **TASK-902 (`MP-04` / `MP-05`): Employee Web, Standalone Campfire & React Native Mobile Parity**
+  - **Target:** `web/src/api/contracts.ts`, `web/src/api/apiClient.ts`, `web/src/employee/MakeMeProductivePanel.tsx`, `web/src/employee/EmployeeWorkspace.tsx`, `web/public/productivity/`, `web/public/campfire/`, `mobile/App.tsx`
+  - **Details:** Implement `Make me Productive` across Employee Web (`LIVE` + `DEMO`), standalone `/campfire/index.html` (`model.mjs` + `model.test.mjs`), and React Native `mobile/App.tsx` (`Focus` tab with `AppState` deadline timer).
+  - **Acceptance Criteria:** `model.test.mjs`, `engine.test.mjs`, `npm --prefix web run build`, and `npm --prefix mobile run typecheck` all pass.
+
+- [ ] **TASK-903 (`MP-02` / `MP-08`): Production Entra/OIDC Principal & Privacy Release Gate**
+  - **Target:** `backend/src/main/java/com/mastek/pulse/common/IdentityService.java`
+  - **Details:** Replace `X-Pulse-User-Id` demo header with verified Entra ID / OIDC principal before any real employee pilot.
+
+- [x] **TASK-904: Animated Campfire Splash Loader & Interactive 5-Step New-User Guided Walkthrough (Web & Mobile)**
+  - **Target:** `web/src/index.css`, `web/src/App.tsx`, `web/src/employee/EmployeeWorkspace.tsx`, `mobile/App.tsx`
+  - **Details:** Add pulsing Campfire emblem, orbiting ember ring, and progress sweep animation while igniting/loading the workspace (`prefers-reduced-motion` safe), followed by an interactive 5-step guided tour (with instant deep-link jump buttons and top-header `🎯 Walkthrough` / `🎯 Tour` replay button) across Web and Mobile.
+
+- [x] **TASK-905: Mobile App Navigation Controls (`Home` & `Logout`) and Functional Flaw Remediation**
+  - **Target:** `mobile/App.tsx`
+  - **Details:** Added dedicated `🏠 Home` and `🚪 Logout` header controls (plus clickable header brand home link, Profile quick actions `Go to Home Feed`, `Reset All Demo Data`, and `Logout to Login Screen`, and `🏠 Home` icon+label bottom tab navigation that clears nested sub-screens). Fixed 6 functional flaws in `mobile/App.tsx`:
+    1. Centralized `handleLogout()` cleanly stops active audio playback and Pomodoro/Breathing deadline timers and clears nested modal/sub-screen state before returning to Sign-In.
+    2. Compact 8-tab bottom dock with icons + labels (`Home`, `Points`, `Focus`, `Listen`, `Connect`, `Publish`, `Portal`, `Profile`) resets nested sub-screens via `handleSelectTab()`.
+    3. Per-persona Weekly Challenge entries (`story_ch_${persona}`) prevent personas from overwriting Asha's entry and allow resubmission from `DRAFT` or `WITHDRAWN`.
+    4. Live audio playback `useEffect` interval advances `castPositionSec` in real time across Culture Cast, Mastek Radio, Story Detail, and Mini-Player.
+    5. Connections (`CONNECT`) filters `RECEIVED`, `SENT`, and `ACCEPTED` sub-tabs dynamically by host/sender persona (`inviteHostId`, `inviteSenderId`, `inviteTopic`), restricts Accept/Decline to the Host with a 1-tap Host switcher shortcut, supports `Withdraw Request` on `SENT`, and dynamically labels bilateral check-in confirmations.
+    6. `Make me Productive` (`Focus` tab) adds habit editing (`Edit` / `Save Habit Changes` / `Cancel`), weekly `checked / due` progress summary, `Clear My Demo Data` / `Restore Sample Habit`, and labeled, range-clamped custom timer duration inputs (`Focus` 1–120m, `Short`/`Long` 1–60m, `Reset` 1–30m) with immediate idle timer sync.
+  - **Acceptance Criteria:** `mobile/node_modules/.bin/tsc -p mobile/tsconfig.json --noEmit` exits `0` with zero errors.
+
+## Make me Productive
+
+- [x] MP-01: Web demo and proposal extension (habit editing, custom timers, practical hints; synthetic storage only).
+- [ ] MP-02–MP-08: Verified identity, private API/persistence, React live integration, timer lifecycle, native parity and privacy release gate. See [feature plan](../campfire/MAKE-ME-PRODUCTIVE-PLAN.md) for ordered dependencies and acceptance criteria.
